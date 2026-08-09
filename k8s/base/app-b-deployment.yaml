@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-b-engine
+  namespace: risk-system
+  labels:
+    app: app-b-engine
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: app-b-engine
+  template:
+    metadata:
+      labels:
+        app: app-b-engine
+    spec:
+      serviceAccountName: app-b-engine
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: app-b-engine
+      containers:
+        - name: app-b-engine
+          image: app-b-image:GIT_SHA
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: RISK_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: runtime-config
+                  key: RISK_REGION
+            - name: RISK_CLUSTER
+              valueFrom:
+                configMapKeyRef:
+                  name: runtime-config
+                  key: RISK_CLUSTER
+            - name: SERVICE_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: runtime-config
+                  key: SERVICE_VERSION
+            - name: FAULT_CONFIG_PATH
+              value: /etc/risk-faults/faults.json
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: fault-config
+              mountPath: /etc/risk-faults
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: fault-config
+          projected:
+            sources:
+              - configMap:
+                  name: risk-faults

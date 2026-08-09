@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-a-gateway
+  namespace: risk-system
+  labels:
+    app: app-a-gateway
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: app-a-gateway
+  template:
+    metadata:
+      labels:
+        app: app-a-gateway
+    spec:
+      serviceAccountName: app-a-gateway
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: app-a-gateway
+      containers:
+        - name: app-a-gateway
+          image: app-a-image:GIT_SHA
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: RISK_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: runtime-config
+                  key: RISK_REGION
+            - name: RISK_CLUSTER
+              valueFrom:
+                configMapKeyRef:
+                  name: runtime-config
+                  key: RISK_CLUSTER
+            - name: SERVICE_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: runtime-config
+                  key: SERVICE_VERSION
+            - name: APP_B_BASE_URL
+              value: http://app-b-engine.risk-system.svc.cluster.local:8080
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: 500m
+              memory: 1280Mi
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

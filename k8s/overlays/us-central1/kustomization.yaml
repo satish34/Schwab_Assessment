@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+configMapGenerator:
+  - name: runtime-config
+    namespace: risk-system
+    behavior: replace
+    literals:
+      - RISK_REGION=us-central1
+      - RISK_CLUSTER=gke-risk-usc1
+      - SERVICE_VERSION=GIT_SHA
+generatorOptions:
+  disableNameSuffixHash: true
+images:
+  - name: app-a-image
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/risk/app-a
+    newTag: GIT_SHA
+  - name: app-b-image
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/risk/app-b
+    newTag: GIT_SHA
+patches:
+  - target:
+      kind: Service
+      name: app-a-gateway
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"exposed_ports":{"8080":{"name":"app-a-neg-usc1"}}}'

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: risk-faults
+  namespace: risk-system
+data:
+  faults.json: |
+    {
+      "injected_latency_ms": 1000,
+      "injected_error_rate": 0.0
+    }
