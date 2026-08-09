@@ -343,8 +343,25 @@ jq -e \
     ] | length == 1)
   ' <<<"$dataset_json" >/dev/null || {
     printf 'Dataset IAM does not match the sink-writer and Grafana-reader contract.\n' >&2
-    exit 1
-  }
+  exit 1
+}
+
+grafana_service_account_policy="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" \
+    iam service-accounts get-iam-policy "$grafana_sa" \
+    --project="$PROJECT_ID" \
+    --format=json
+)"
+jq -e --arg operator "user:$expected_account" '
+  ([
+    .bindings[]?
+    | select(.role == "roles/iam.serviceAccountTokenCreator")
+    | .members[]?
+  ] | sort) == [$operator]
+' <<<"$grafana_service_account_policy" >/dev/null || {
+  printf 'Grafana token minting is not restricted to the assessment operator.\n' >&2
+  exit 1
+}
 
 jq -e --arg writer "$sink_writer" '
   [

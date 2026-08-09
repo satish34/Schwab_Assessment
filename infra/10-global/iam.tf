@@ -96,3 +96,9 @@ resource "google_project_iam_member" "grafana_project_reader" {
 
   depends_on = [google_project_default_service_accounts.defaults]
 }
+
+resource "google_service_account_iam_member" "grafana_operator_impersonation" {
+  service_account_id = google_service_account.grafana_reader.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "user:satish.cse7@gmail.com"
+}
