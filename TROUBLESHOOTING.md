@@ -843,8 +843,9 @@ uniform private access, grant that identity bucket-scoped Object Viewer, and
 make the submit command use this exact managed staging path.
 
 Verification and outcome:
-Pending the reviewed Terraform import, plan, apply, zero-drift check, and a
-successful immutable-image build.
+Resolved. The bucket verifier and zero-drift plan pass. Cloud Build
+`1d12c677-f18e-478c-bacc-d241172783b6` succeeded, and both immutable image
+digests passed independent registry verification.
 
 ## 2026-08-08 22:24 CDT - Troubleshooting read used the wrong directory
 
@@ -861,3 +862,304 @@ read `TROUBLESHOOTING.md`.
 Verification and outcome:
 Resolved. The root timeline was found and updated; no repository content was
 lost or replaced.
+
+## 2026-08-08 22:35 CDT - Build-status jq was not on one PowerShell PATH
+
+Command/operation:
+Format the completed Cloud Build record with jq.
+
+Symptom:
+PowerShell could not find the WinGet jq shim.
+
+Hypothesis and change:
+This parent process does not inherit the newer user PATH. Prepend the known
+WinGet Links directory for that invocation.
+
+Verification and outcome:
+Resolved. The retried query returned build status `SUCCESS`, all nine completed
+steps, and both image digests.
+
+## 2026-08-08 22:39 CDT - Kubernetes client lacked the GKE auth plugin
+
+Command/operation:
+First regional workload deployment.
+
+Symptom:
+Both kubeconfig entries were generated, but kubectl stopped before apply because
+`gke-gcloud-auth-plugin.exe` was not installed.
+
+Hypothesis and change:
+The Windows SDK was installed without its optional GKE component. Its system
+directory is not writable without elevation. Add an idempotent repo-local
+installer using Google's pinned Windows archive and SHA-256, then prepend the
+ignored tool directory in every Kubernetes workflow.
+
+Verification and outcome:
+Resolved. The pinned archive passed its checksum and version probe from ignored
+`.tools/`; both explicit cluster contexts then authenticated successfully.
+
+## 2026-08-08 22:44 CDT - GKE annotated the private App B Service for Ingress
+
+Command/operation:
+First post-rollout regional workload verification.
+
+Symptom:
+The Pods became ready, but the verifier rejected App B because GKE added
+`cloud.google.com/neg: {"ingress":true}` to its ClusterIP Service.
+
+Hypothesis and change:
+GKE enables container-native load balancing by default and mutates otherwise
+unannotated Services. App B must stay internal and needs no load-balancer NEG.
+Set Google's explicit `{"ingress":false}` opt-out in the base manifest and
+require that value in the live verifier.
+
+Verification and outcome:
+Resolved. The idempotent reapply set `{"ingress":false}` in both clusters.
+Each cell has exact 2+2 ready Pods and passed a real App A-to-App B request;
+Compute inventory contains only the intended App A NEG names.
+
+## 2026-08-08 22:49 CDT - Autopilot occupied only one zone per region
+
+Command/operation:
+Live NEG and node inventory after the first healthy two-plus-two rollout.
+
+Symptom:
+Each regional cluster used one node in one zone, so GKE created only one App A
+NEG per region. The frozen edge stack expects the same custom NEG name in all
+three zones of each region.
+
+Hypothesis and change:
+GKE creates standalone NEGs only in zones occupied by the cluster. Autopilot
+correctly bin-packed the small workload, while the plan assumed all regional
+zones would be occupied. Strict `DoNotSchedule` topology spread is not supported
+by GKE Cluster Autoscaler. Use three one-replica App A shards, each with an
+exact zonal selector and its own 1-2 HPA; keep App B at two. This adds useful
+zonal serving capacity without dummy Pods or manual NEG endpoints.
+
+Verification and outcome:
+Resolved. The three-plus-two rollout put one real App A Pod in every frozen
+zone. GKE now owns exactly six populated `GCE_VM_IP_PORT` NEGs, with three
+registered port-8080 endpoints in each region.
+
+## 2026-08-08 22:50 CDT - Availability review guessed two manifest names
+
+Command/operation:
+Read PodDisruptionBudget settings while reviewing the zone-spread adjustment.
+
+Symptom:
+Reads for `disruption-budgets.yaml` and `availability.yaml` failed because
+neither filename exists.
+
+Hypothesis and change:
+Discover the base manifest inventory first and read the actual
+`pod-disruption-budgets.yaml` file.
+
+Verification and outcome:
+Resolved. The App A PDB is updated with its deployment to keep two replicas
+available during voluntary disruption.
+
+## 2026-08-08 23:04 CDT - Regional manifest checks used stale local tooling assumptions
+
+Command/operation:
+Static Terraform and Kubernetes validation for the zonal App A shard change.
+
+Symptom:
+Terraform was absent from the inherited PowerShell PATH. The first client-side
+kubectl dry runs also attempted discovery at `localhost:8080`, even with
+validation disabled, because no cluster context was selected.
+
+Hypothesis and change:
+This long-running process had not inherited the WinGet tool path, and kubectl
+still needs discovery for these rendered resources. Prepend the known WinGet
+Links path, use the ignored explicit kubeconfig and contexts, and run bounded
+server-side dry runs against both real clusters.
+
+Verification and outcome:
+Resolved. Terraform validation and both server-side dry runs passed. Each
+render contains exactly three App A shards, three shard HPAs, App B, and the
+expected policies; no resources were changed by the dry runs.
+
+## 2026-08-08 23:07 CDT - Workload verifier exceeded the Windows argument limit
+
+Command/operation:
+First verification pass after the three-shard rollout.
+
+Symptom:
+Windows jq failed with `Argument list too long` while checking App A placement.
+All five Pods in each cell were already healthy.
+
+Hypothesis and change:
+The verifier passed the cluster's complete node inventory through jq's command
+line. Validate the three Pod records in jq, then query only each serving Pod's
+node and compare its live zone directly.
+
+Verification and outcome:
+Resolved. The fresh verifier passed exact three-plus-two readiness, one App A
+Pod in each of the six intended zones, both immutable images, and a real local
+App A-to-App B request in each region.
+
+## 2026-08-08 23:20 CDT - Forwarding rule repeated the reserved IP version
+
+Command/operation:
+First `infra/30-lb` apply after a clean seven-add, zero-destroy plan.
+
+Symptom:
+The health check, backend service, URL map, and HTTP proxy were created, but the
+global forwarding rule returned HTTP 400: `ipVersion` and `ipAddress` cannot be
+specified together.
+
+Hypothesis and change:
+The reserved global address already fixes the rule to IPv4. Remove the
+redundant `ip_version` field from both the core HTTP and optional HTTPS rules,
+then re-plan the partial Terraform state before retrying.
+
+Verification and outcome:
+Resolved. The partial-state plan showed one add, zero changes, and zero
+destroys. The retry created only the forwarding rule; live verification found
+3/3 healthy regional endpoints and an HTTP 200 response at the reserved IP.
+The refreshed Terraform plan reports no changes.
+
+## 2026-08-08 23:39 CDT - Guessed Grafana image tag did not exist
+
+Command/operation:
+Started a disposable Grafana container to validate dashboard and data-source
+provisioning against the real product.
+
+Symptom:
+Docker reported `manifest unknown` for the guessed `grafana/grafana:12.6.1`
+tag, so no container started.
+
+Hypothesis and change:
+The data-source plugin version did not imply a matching Grafana image tag.
+Inspect the official image registry and use the available Grafana `13.1.0`
+image with the compatible BigQuery `3.2.0` plugin.
+
+Verification and outcome:
+Resolved. A disposable Grafana 13.1.0 instance loaded both pinned-UID data
+sources and the four-panel dashboard without provisioning errors, then was
+stopped and removed.
+
+## 2026-08-08 23:39 CDT - Live Grafana gate lacks external credentials
+
+Command/operation:
+Ran `scripts/verify-grafana.sh` after its static and source-data checks passed.
+
+Symptom:
+No `GRAFANA_URL` or `GRAFANA_TOKEN` is available, so the script cannot query an
+external Grafana instance or prove that its rendered panels contain data.
+
+Hypothesis and change:
+This is the accepted external SaaS bootstrap input, not a GCP data or dashboard
+configuration failure. Keep credentials out of Git and stop before any Grafana
+API call.
+
+Verification and outcome:
+Blocked externally. The checked-in dashboard and provisioning load in Grafana,
+and BigQuery plus all three Monitoring metrics have real data from both cells.
+After the URL and a session-only token are supplied, `make verify-grafana` is
+the bounded continuation command.
+
+## 2026-08-08 23:40 CDT - Hardened autoscaling verifier rejected healthy Pods
+
+Command/operation:
+Combined workload, NEG, and edge verification after adding HPA-aware checks.
+
+Symptom:
+The wrapper exceeded its normal duration. A short diagnostic showed every
+workload healthy, but the workload predicate kept returning false. Trace output
+then showed a node name ending in a carriage return.
+
+Hypothesis and change:
+GKE's autoscaling/v2 objects omit both generation fields used by the first
+reconciliation check, and the native Windows jq shim emits CRLF. Use live
+`AbleToScale` and `ScalingActive` conditions with exact replica/HPA bounds, and
+strip carriage returns from jq values before passing them to kubectl or Bash
+arithmetic.
+
+Verification and outcome:
+Resolved. The workload verifier passed both 3-6/2-6 regional cells and their
+local requests. The NEG verifier then matched all six groups exactly to the
+ready zonal Pod IPs on port 8080, three endpoints per region.
+
+## 2026-08-08 23:46 CDT - Background mock listener was rejected locally
+
+Command/operation:
+Tried to exercise the Grafana verifier's live API branch with a PowerShell
+background-job HTTP listener.
+
+Symptom:
+The command wrapper rejected the combined background-listener script before it
+ran. No process started and no file or external service changed.
+
+Hypothesis and change:
+The nested background job triggered the local command policy. Replace it with
+one foreground test process that owns an in-memory loopback server and invokes
+the verifier as a child.
+
+Verification and outcome:
+Resolved. The mock covered both data-source health endpoints, the dashboard
+read, every expected panel target, and both cell labels. The complete live
+verifier branch passed and the loopback server stopped normally.
+
+## 2026-08-09 00:09 CDT - BigQuery sink stores JSON numbers as FLOAT
+
+Command/operation:
+First BigQuery hard-gate pass after the controlled traffic seed.
+
+Symptom:
+The table existed and was time-partitioned, but the schema assertion rejected
+`jsonPayload.status_code` and `latency_ms` because it expected INTEGER.
+
+Hypothesis and change:
+Cloud Logging's BigQuery sink maps JSON numeric values to FLOAT in the generated
+table. Keep query-side `SAFE_CAST` checks for whole status/duration values and
+verify the real stable FLOAT schema instead of assuming a hand-created type.
+
+Verification and outcome:
+Resolved. The rerun found every current-run row, zero current export errors,
+and substantive results from all four checked-in queries across both regions,
+both services, three decisions, latency percentiles, and trace joins.
+
+## 2026-08-09 00:22 CDT - Failover cleanup needed stronger recovery guarantees
+
+Command/operation:
+First live failover baseline, before fault injection.
+
+Symptom:
+A safety review found that cleanup tried restoration only once, deleted its
+isolated kubeconfig even if restoration failed, and did not force-kill a hung
+native client after timeout. The baseline run was stopped before applying a
+fault; both live fault profiles still read `0.0` afterward.
+
+Hypothesis and change:
+An interruption during a real outage must leave a usable recovery path. Add
+three bounded restore attempts, timeout kill escalation, and preservation of
+the exact kubeconfig/work directory when automatic restoration cannot be
+confirmed.
+
+Verification and outcome:
+Resolved. Bash validation passed, both regions were independently healthy, and
+the hardened runner later restored and reverified both cells during the live
+experiment.
+
+## 2026-08-09 00:31 CDT - Initial failover continuity ceiling was too tight
+
+Command/operation:
+First full run of the hardened failover gate at one request per second.
+
+Symptom:
+The fault, regional drain, restoration, and final health checks completed, but
+the evidence policy rejected more than 15 transition failures. No PASS evidence
+was retained, and the independent workload, NEG, and edge verifier confirmed
+both cells fully recovered.
+
+Hypothesis and change:
+Fifteen seconds did not cover the frozen 30-second connection-draining window
+plus application readiness and external health-check detection. Use a bounded
+60-request test ceiling, forbid failed requests outside the drain window, and
+report the actual count instead of implying zero downtime.
+
+Verification and outcome:
+Resolved. The final run sent 167 requests, recorded 16 failures all inside the
+drain window, served six survivor-region responses after drain, and recovered
+all six backends. The independent full verifier passed again after restoration.

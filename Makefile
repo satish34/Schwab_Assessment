@@ -24,7 +24,7 @@ export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION DOMAIN_NAME
 export PRIMARY_REGION SECONDARY_REGION MAVEN_IMAGE GCLOUD_IMAGE
 
 .PHONY: help preflight fmt test local-up local-verify bootstrap global clusters
-.PHONY: build deploy-apps wait-negs lb verify seed-traffic verify-bigquery
+.PHONY: build deploy-apps wait-negs lb verify seed-traffic verify-bigquery verify-grafana
 .PHONY: test-failover capture-evidence plan-check destroy orphan-check
 
 help:
@@ -44,6 +44,7 @@ help:
 	  'verify             verify clusters, backends, and public API' \
 	  'seed-traffic       generate controlled application traffic' \
 	  'verify-bigquery    run checked-in BigQuery queries' \
+	  'verify-grafana     verify source data and all four live Grafana panels' \
 	  'test-failover      run and restore the cell-failover experiment' \
 	  'capture-evidence   save non-secret gate evidence' \
 	  'plan-check         run final Terraform drift checks' \
@@ -115,13 +116,16 @@ verify:
 	@bash ./scripts/verify-lb.sh
 
 seed-traffic:
-	$(call pending_target,seed-traffic)
+	@bash ./scripts/generate-traffic.sh "$(IMAGE_TAG)"
 
 verify-bigquery:
-	$(call pending_target,verify-bigquery)
+	@bash ./scripts/verify-bigquery.sh "$(IMAGE_TAG)"
+
+verify-grafana:
+	@bash ./scripts/verify-grafana.sh
 
 test-failover:
-	$(call pending_target,test-failover)
+	@bash ./scripts/test-failover.sh "$(IMAGE_TAG)"
 
 capture-evidence:
 	$(call pending_target,capture-evidence)
