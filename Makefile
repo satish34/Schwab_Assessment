@@ -74,7 +74,7 @@ global:
 	@bash ./scripts/terraform-stack.sh infra/10-global apply
 
 clusters:
-	$(call pending_target,clusters)
+	@bash ./scripts/terraform-stack.sh infra/20-cluster apply
 
 build:
 	$(call pending_target,build)

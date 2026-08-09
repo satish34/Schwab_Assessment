@@ -29,12 +29,35 @@ esac
 }
 
 case "$stack_dir" in
-  infra/00-bootstrap|infra/10-global) ;;
+  infra/00-bootstrap|infra/10-global|infra/20-cluster) ;;
   *)
     printf 'Terraform stack is not approved by this wrapper: %s\n' "$stack_dir" >&2
     exit 2
     ;;
 esac
+
+if [[ "$stack_dir" == "infra/20-cluster" ]]; then
+  : "${ADMIN_CIDR:?ADMIN_CIDR is required for infra/20-cluster}"
+
+  if [[ ! "$ADMIN_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/32$ ]]; then
+    printf 'ADMIN_CIDR must be one IPv4 address in exact /32 notation.\n' >&2
+    exit 1
+  fi
+
+  admin_ip="${ADMIN_CIDR%/32}"
+  IFS='.' read -r -a admin_octets <<<"$admin_ip"
+  for octet in "${admin_octets[@]}"; do
+    if [[ ( "$octet" != "0" && "$octet" == 0* ) ]] || ((10#$octet > 255)); then
+      printf 'ADMIN_CIDR must be one canonical IPv4 address in exact /32 notation.\n' >&2
+      exit 1
+    fi
+  done
+
+  if [[ "$admin_ip" == "0.0.0.0" ]]; then
+    printf 'ADMIN_CIDR must not authorize 0.0.0.0/32.\n' >&2
+    exit 1
+  fi
+fi
 
 active_account="$(gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null)"
 if [[ "$active_account" != "$expected_account" ]]; then
@@ -52,8 +75,9 @@ TF_VAR_project_id="$PROJECT_ID"
 TF_VAR_billing_account_id="$BILLING_ACCOUNT_ID"
 TF_VAR_gcloud_configuration="$GCLOUD_CONFIGURATION"
 TF_VAR_domain_name="${DOMAIN_NAME:-}"
-export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name
-trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name' EXIT
+TF_VAR_admin_cidr="${ADMIN_CIDR:-}"
+export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr
+trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr' EXIT
 
 run_terraform() {
   timeout --foreground --signal=INT "$terraform_timeout" terraform "$@"
@@ -121,4 +145,8 @@ fi
 
 if [[ "$action" == "apply" && "$stack_dir" == "infra/10-global" ]]; then
   bash ./scripts/verify-global.sh
+fi
+
+if [[ "$action" == "apply" && "$stack_dir" == "infra/20-cluster" ]]; then
+  bash ./scripts/verify-clusters.sh
 fi
