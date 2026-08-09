@@ -29,7 +29,7 @@ esac
 }
 
 case "$stack_dir" in
-  infra/00-bootstrap|infra/10-global|infra/20-cluster) ;;
+  infra/00-bootstrap|infra/10-global|infra/20-cluster|infra/30-lb) ;;
   *)
     printf 'Terraform stack is not approved by this wrapper: %s\n' "$stack_dir" >&2
     exit 2
@@ -149,4 +149,8 @@ fi
 
 if [[ "$action" == "apply" && "$stack_dir" == "infra/20-cluster" ]]; then
   bash ./scripts/verify-clusters.sh
+fi
+
+if [[ "$action" == "apply" && "$stack_dir" == "infra/30-lb" ]]; then
+  bash ./scripts/verify-lb.sh
 fi

@@ -638,3 +638,174 @@ Verification and outcome:
 Resolved. The pinned Maven pass now has 31 passing tests. Unsupported content
 types and `Accept: text/plain` both return 400 without calling App B; the latter
 correctly has an empty body because the client refused JSON.
+
+## 2026-08-08 21:52 CDT - Docker Desktop did not allocate an empty host port
+
+Command/operation:
+First `make local-up` and two isolated Docker port-allocation probes.
+
+Symptom:
+Both services became healthy, but Compose published no App A port. An explicit
+OS-selected port rendered correctly but was also suppressed. Two early CLI
+probes used `--network none`, so they could not prove port publishing; a broad
+range probe also selected a Windows-reserved port.
+
+Hypothesis and change:
+This Docker Desktop build suppresses published ports for a container attached
+only to an internal Compose network. A control probe on the normal bridge
+published the same loopback binding. Keep App B without any host port, use the
+normal private project bridge, and publish only App A to an OS-selected
+`127.0.0.1` port.
+
+Verification:
+Rerun `make local-up`, require a `127.0.0.1:<port>` binding, then run the full
+local verifier.
+
+Outcome:
+Resolved. App A is published only on `127.0.0.1:53173`; App B has no host port,
+and both services are healthy on the project bridge.
+
+## 2026-08-08 21:55 CDT - Git Bash rewrote an in-container `/dev/tcp` path
+
+Command/operation:
+First `make local-verify` and its focused trace.
+
+Symptom:
+The verifier exited at App B's first direct health check even though the same
+container command passed from PowerShell and Compose health remained green. A
+follow-up nested-quote diagnostic was rejected by PowerShell before execution.
+
+Hypothesis and change:
+Git Bash path conversion rewrote `/dev/tcp/...` while passing the command
+through `docker.exe`. Disable MSYS path conversion for that one `docker exec`
+and attach an explicit failure message.
+
+Verification:
+Rerun the complete local verifier from its Make target.
+
+Outcome:
+Resolved. The Make target completed the full health, request, trace, log, fault,
+and recovery verification.
+
+## 2026-08-08 21:57 CDT - Make rewrote Maven's container work directory
+
+Command/operation:
+First repository-wide `make fmt`.
+
+Symptom:
+Docker rejected `C:/Program Files/Git/workspace`; Git Bash had converted the
+intended in-container `/workspace` argument. The formatter never started and no
+source changed. A later Make PATH check also showed that `$(shell cygpath)` was
+launched before Make could resolve `cygpath` on Windows. One direct Terraform
+output probe likewise used the stale parent PATH before its corrected rerun.
+
+Hypothesis and change:
+This is the same MSYS-to-`docker.exe` argument conversion seen in the local
+health check. Disable path conversion only for the two Maven container calls,
+and export the existing Windows WinGet path without a subprocess.
+
+Verification:
+Rerun `make fmt` and `make test` through the checked-in Makefile.
+
+Outcome:
+Resolved. `make fmt` and `make test` pass; Java has 31 passing tests and .NET
+has 34, with both Kubernetes overlays rendering successfully.
+
+## 2026-08-08 21:58 CDT - Image workflow checks made Windows and SDK assumptions
+
+Command/operation:
+Offline Cloud Build parsing and source-manifest validation.
+
+Symptom:
+The review first guessed a nonexistent `infra/10-global/main.tf`; the offline
+parser missed the SDK's `third_party` path, and a broad SDK search hit protected
+subtrees. Git Bash also missed the WinGet `jq` link. The upload manifest used
+backslashes and legitimately included `.env.example`; a review-only
+`--ignore-file` flag was unsupported. Two temporary-tar smoke commands were
+blocked before execution by shell policy.
+
+Hypothesis and change:
+The checks assumed Unix paths and a monolithic Terraform file. Discover the
+split files, load the exact SDK module path, narrow the search, normalize
+manifest separators, allow only `.env.example`, use `.gcloudignore`
+automatically, and replace tar probes with safe scanner/socket checks.
+
+Verification and outcome:
+Resolved. The Cloud Build config parses as nine steps and two images; all
+pinned images resolve, Bash syntax passes, and the 149-file upload manifest
+contains the required sources with no state, credentials, or Git internals.
+
+## 2026-08-08 21:59 CDT - Strict Trivy data included unfixed Debian findings
+
+Command/operation:
+HIGH/CRITICAL scans of both final local images with Trivy 0.73.0.
+
+Symptom:
+App A had no HIGH/CRITICAL findings. App B's current Debian base reported 17
+HIGH and five CRITICAL OS findings, all marked without a vendor fixed version;
+its .NET packages had none.
+
+Hypothesis and change:
+Different scanners classify deferred base-OS advisories differently. Keep the
+current patched Microsoft image and block every HIGH/CRITICAL issue that has a
+vendor fix with Trivy's `--ignore-unfixed`; retain the unresolved count in the
+record instead of claiming a clean strict scan.
+
+Verification and outcome:
+Resolved for the publish gate. Both images pass the fix-available
+HIGH/CRITICAL check; App A also passes the strict check.
+
+## 2026-08-08 22:00 CDT - Regional-script fixtures hit shell-specific parsing
+
+Command/operation:
+Static jq and safety fixtures for the regional deployment scripts.
+
+Symptom:
+The first jq fixture lacked the WinGet link, a nested `bash -c` program was
+rejected by PowerShell quoting, and an `rg` lookahead failed without PCRE2.
+
+Hypothesis and change:
+The fixture commands crossed three parser conventions. Prefix the verified jq
+path, run the JSON pipeline natively, and use `rg --pcre2` for lookaround.
+
+Verification and outcome:
+Resolved. All fixtures, Bash syntax, manifest rendering, and safety scans pass;
+no cluster or cloud mutation occurred.
+
+## 2026-08-08 22:05 CDT - Edge review guessed three repository paths
+
+Command/operation:
+Required-input review and focused jq fixtures for the load-balancer verifier.
+
+Symptom:
+Reads for a repo-local plan, `testdata/expected-response.json`, and
+`k8s/base/runtime-config.yaml` failed. The focused jq invocation also lacked the
+WinGet link on its first PowerShell run.
+
+Hypothesis and change:
+The plan is external, the canonical request is the only response oracle, and
+Kustomize generates `runtime-config`. Use those actual sources and prepend the
+verified WinGet tool path for the fixture.
+
+Verification and outcome:
+Resolved. The corrected jq contract fixture, Bash syntax, and both Terraform
+validations pass without a NEG query or cloud mutation.
+
+## 2026-08-08 22:17 CDT - Commit guard matched the notebook ignore rule
+
+Command/operation:
+First delivery-workflow milestone commit attempt.
+
+Symptom:
+The private-material guard matched the new `.gitignore` line that names the
+interview notebook and stopped before committing. The staged filename list did
+not contain the private file.
+
+Hypothesis and change:
+The content pattern could not distinguish an ignore rule from a staged private
+path. Check staged filenames for `.private/` separately and reserve content
+patterns for actual keys, tokens, and the private assignment name.
+
+Verification and outcome:
+Resolved after the guarded rerun; the interview notebook remains ignored and
+unstaged.

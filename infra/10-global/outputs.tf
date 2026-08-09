@@ -79,6 +79,10 @@ output "dns_name_servers" {
   value = local.tls_enabled ? google_dns_managed_zone.risk[0].name_servers : []
 }
 
+output "domain_name" {
+  value = local.tls_enabled ? local.domain_name : ""
+}
+
 output "certificate_map_id" {
-  value = local.tls_enabled ? google_certificate_manager_certificate_map.risk[0].id : null
+  value = local.tls_enabled ? google_certificate_manager_certificate_map.risk[0].id : ""
 }

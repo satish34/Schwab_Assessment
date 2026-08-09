@@ -72,15 +72,20 @@ jq -e \
 if [[ -z "${DOMAIN_NAME:-}" ]]; then
   jq -e '
     (.dns_name_servers.value == [])
-    and (.certificate_map_id.value == null)
+    and (.domain_name.value == "")
+    and (.certificate_map_id.value == "")
   ' <<<"$outputs_json" >/dev/null || {
     printf 'TLS outputs exist even though DOMAIN_NAME is empty.\n' >&2
     exit 1
   }
 else
-  jq -e '
+  normalized_domain="$(
+    printf '%s' "$DOMAIN_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[.]$//'
+  )"
+  jq -e --arg domain "$normalized_domain" '
     (.dns_name_servers.value | length) > 0
-    and (.certificate_map_id.value != null)
+    and (.domain_name.value == $domain)
+    and (.certificate_map_id.value | endswith("/certificateMaps/risk-cert-map"))
   ' <<<"$outputs_json" >/dev/null || {
     printf 'TLS outputs are incomplete for the supplied DOMAIN_NAME.\n' >&2
     exit 1

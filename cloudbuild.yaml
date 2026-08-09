@@ -1,0 +1,139 @@
+steps:
+  - id: validate-inputs
+    name: docker.io/library/bash@sha256:ae4668c2560999e65e89532cd2ad1b6688bb23298189f0bd229ef80fa4bd0831
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        [[ '${_GIT_SHA}' =~ ^[0-9a-f]{40}$ ]]
+        [[ '${_REPOSITORY}' == 'us-central1-docker.pkg.dev/${PROJECT_ID}/risk' ]]
+        printf 'Building immutable images for commit %s.\n' '${_GIT_SHA}'
+
+  - id: test-app-a
+    name: docker.io/library/maven@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237
+    dir: apps/app-a-java
+    entrypoint: mvn
+    args:
+      - --batch-mode
+      - --no-transfer-progress
+      - spotless:check
+      - verify
+    waitFor: [validate-inputs]
+
+  - id: test-app-b
+    name: mcr.microsoft.com/dotnet/sdk@sha256:e2f26f26169fd10d6f1b426e01c97397717b32e9d5ab4ee4a7d5497ed9403007
+    dir: apps/app-b-dotnet
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        dotnet restore AppB.sln --nologo
+        dotnet format AppB.sln --verify-no-changes --no-restore --verbosity minimal
+        dotnet test AppB.sln --configuration Release --no-restore --nologo
+    waitFor: [validate-inputs]
+
+  - id: build-app-a
+    name: gcr.io/cloud-builders/docker@sha256:617f98016081e2978c0b44184d7b09446027b909f1078b8fdc23efc4c74c5f20
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --build-arg
+      - SERVICE_VERSION=${_GIT_SHA}
+      - --label
+      - org.opencontainers.image.revision=${_GIT_SHA}
+      - --label
+      - org.opencontainers.image.version=${_GIT_SHA}
+      - --tag
+      - ${_REPOSITORY}/app-a:${_GIT_SHA}
+      - apps/app-a-java
+    waitFor: [test-app-a]
+
+  - id: build-app-b
+    name: gcr.io/cloud-builders/docker@sha256:617f98016081e2978c0b44184d7b09446027b909f1078b8fdc23efc4c74c5f20
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --label
+      - org.opencontainers.image.revision=${_GIT_SHA}
+      - --label
+      - org.opencontainers.image.version=${_GIT_SHA}
+      - --tag
+      - ${_REPOSITORY}/app-b:${_GIT_SHA}
+      - apps/app-b-dotnet
+    waitFor: [test-app-b]
+
+  - id: export-app-a-for-scan
+    name: gcr.io/cloud-builders/docker@sha256:617f98016081e2978c0b44184d7b09446027b909f1078b8fdc23efc4c74c5f20
+    args:
+      - image
+      - save
+      - --output=/workspace/app-a-image.tar
+      - ${_REPOSITORY}/app-a:${_GIT_SHA}
+    waitFor: [build-app-a]
+
+  - id: export-app-b-for-scan
+    name: gcr.io/cloud-builders/docker@sha256:617f98016081e2978c0b44184d7b09446027b909f1078b8fdc23efc4c74c5f20
+    args:
+      - image
+      - save
+      - --output=/workspace/app-b-image.tar
+      - ${_REPOSITORY}/app-b:${_GIT_SHA}
+    waitFor: [build-app-b]
+
+  # Publish is blocked by every HIGH/CRITICAL finding that has a vendor fix.
+  - id: scan-app-a
+    name: docker.io/aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+    args:
+      - image
+      - --input=/workspace/app-a-image.tar
+      - --scanners=vuln
+      - --severity=HIGH,CRITICAL
+      - --ignore-unfixed
+      - --exit-code=1
+      - --no-progress
+      - --skip-version-check
+      - --timeout=10m
+    volumes:
+      - name: trivy-cache
+        path: /root/.cache/trivy
+    waitFor: [export-app-a-for-scan]
+
+  - id: scan-app-b
+    name: docker.io/aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+    args:
+      - image
+      - --input=/workspace/app-b-image.tar
+      - --scanners=vuln
+      - --severity=HIGH,CRITICAL
+      - --ignore-unfixed
+      - --exit-code=1
+      - --no-progress
+      - --skip-version-check
+      - --timeout=10m
+    volumes:
+      - name: trivy-cache
+        path: /root/.cache/trivy
+    waitFor: [scan-app-a, export-app-b-for-scan]
+
+substitutions:
+  _GIT_SHA: UNSET
+  _REPOSITORY: UNSET
+
+images:
+  - ${_REPOSITORY}/app-a:${_GIT_SHA}
+  - ${_REPOSITORY}/app-b:${_GIT_SHA}
+
+serviceAccount: projects/schwab-assessment-gke/serviceAccounts/risk-cloud-build@schwab-assessment-gke.iam.gserviceaccount.com
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  sourceProvenanceHash: [SHA256]
+
+timeout: 1800s
+
+tags:
+  - risk-assessment
+  - immutable-images

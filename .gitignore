@@ -58,3 +58,6 @@ Thumbs.db
 
 # Evidence working files that may contain transient command output
 evidence/tmp/
+
+# Private interview working notes (never commit)
+.private/INTERVIEW_FOLLOWUP_NOTES.md

@@ -1,5 +1,7 @@
 ifeq ($(OS),Windows_NT)
 SHELL := C:/Program Files/Git/bin/bash.exe
+WINGET_LINKS := $(LOCALAPPDATA)\Microsoft\WinGet\Links
+export PATH := $(WINGET_LINKS);$(PATH)
 else
 SHELL := /bin/bash
 endif
@@ -16,6 +18,7 @@ PRIMARY_REGION ?= us-central1
 SECONDARY_REGION ?= us-east4
 MAVEN_IMAGE ?= maven:3.9.11-eclipse-temurin-21
 GCLOUD_IMAGE ?= gcr.io/google.com/cloudsdktool/google-cloud-cli:525.0.0-slim
+IMAGE_TAG ?= $(shell git rev-parse --verify HEAD^{commit} 2>/dev/null)
 
 export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION DOMAIN_NAME
 export PRIMARY_REGION SECONDARY_REGION MAVEN_IMAGE GCLOUD_IMAGE
@@ -56,16 +59,34 @@ define pending_target
 endef
 
 fmt:
-	$(call pending_target,fmt)
+	@MSYS_NO_PATHCONV=1 docker run --rm \
+	  --volume "$(CURDIR)/apps/app-a-java:/workspace" \
+	  --volume schwab-assessment-maven-cache:/root/.m2 \
+	  --workdir /workspace \
+	  "$(MAVEN_IMAGE)" \
+	  mvn --batch-mode --no-transfer-progress spotless:apply spotless:check
+	@dotnet format apps/app-b-dotnet/AppB.sln --verbosity minimal
+	@terraform fmt -recursive infra
+	@find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+	@git diff --check
 
 test:
-	$(call pending_target,test)
+	@MSYS_NO_PATHCONV=1 docker run --rm \
+	  --volume "$(CURDIR)/apps/app-a-java:/workspace" \
+	  --volume schwab-assessment-maven-cache:/root/.m2 \
+	  --workdir /workspace \
+	  "$(MAVEN_IMAGE)" \
+	  mvn --batch-mode --no-transfer-progress spotless:check verify
+	@dotnet format apps/app-b-dotnet/AppB.sln --verify-no-changes --no-restore --verbosity minimal
+	@dotnet test apps/app-b-dotnet/AppB.sln --configuration Release --no-restore --nologo
+	@kubectl kustomize k8s/overlays/us-central1 >/dev/null
+	@kubectl kustomize k8s/overlays/us-east4 >/dev/null
 
 local-up:
-	$(call pending_target,local-up)
+	@bash ./scripts/local-up.sh
 
 local-verify:
-	$(call pending_target,local-verify)
+	@bash ./scripts/local-verify.sh
 
 bootstrap:
 	@bash ./scripts/terraform-stack.sh infra/00-bootstrap apply
@@ -77,19 +98,21 @@ clusters:
 	@bash ./scripts/terraform-stack.sh infra/20-cluster apply
 
 build:
-	$(call pending_target,build)
+	@bash ./scripts/build-images.sh
 
 deploy-apps:
-	$(call pending_target,deploy-apps)
+	@bash ./scripts/deploy-apps.sh "$(IMAGE_TAG)"
 
 wait-negs:
-	$(call pending_target,wait-negs)
+	@bash ./scripts/wait-negs.sh "$(IMAGE_TAG)"
 
 lb:
-	$(call pending_target,lb)
+	@bash ./scripts/terraform-stack.sh infra/30-lb apply
 
 verify:
-	$(call pending_target,verify)
+	@bash ./scripts/verify-workloads.sh "$(IMAGE_TAG)"
+	@bash ./scripts/wait-negs.sh "$(IMAGE_TAG)"
+	@bash ./scripts/verify-lb.sh
 
 seed-traffic:
 	$(call pending_target,seed-traffic)
