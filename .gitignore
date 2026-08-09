@@ -15,8 +15,15 @@ grafana-key*.json
 **/.terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
 *.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
 !*.tfvars.example
+.terraformrc
+terraform.rc
+credentials.tfrc.json
 crash.log
 crash.*.log
 override.tf

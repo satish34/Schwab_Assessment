@@ -248,3 +248,53 @@ Require the pinned container to return its `bq` version before Gate 0 closes.
 Outcome:
 Resolved. The pinned `google-cloud-cli:525.0.0-slim` container returned
 BigQuery CLI 2.1.17 successfully.
+
+## 2026-08-08 20:11 CDT - Budget notification block failed validation
+
+Command/operation:
+`terraform validate` for `infra/00-bootstrap` with Google provider 7.43.0.
+
+Symptom:
+The provider requires `all_updates_rule` to include a Pub/Sub topic or
+Monitoring notification channel. Setting only the default-IAM-recipient flag
+was invalid.
+
+Hypothesis:
+Default billing-recipient email alerts do not need an `all_updates_rule` block;
+that block configures an additional notification delivery path.
+
+Change/decision:
+Remove the empty delivery rule and keep the four threshold rules. Do not add an
+unused Pub/Sub topic merely to satisfy the schema.
+
+Verification:
+Rerun Terraform formatting, validation, and plan.
+
+Outcome:
+Resolved. Validation passed after the block was removed; the corrected plan
+contains the four budget thresholds.
+
+## 2026-08-08 20:12 CDT - PowerShell split Terraform variable arguments
+
+Command/operation:
+Ran a manual PowerShell `terraform plan` with inline repeated `-var=...`
+arguments.
+
+Symptom:
+Terraform reported too many positional arguments before reading the
+configuration.
+
+Hypothesis:
+PowerShell's native argument handling changed the intended Terraform argument
+boundaries.
+
+Change/decision:
+Run Terraform through the checked-in Bash wrapper, which passes each variable
+as one array element and is the same path used by the Make target.
+
+Verification:
+Run `scripts/terraform-stack.sh infra/00-bootstrap plan`.
+
+Outcome:
+Resolved. The Bash wrapper produced a clean plan: 13 additions, zero changes,
+and zero destroys.

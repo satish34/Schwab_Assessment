@@ -5,9 +5,11 @@ SHELL := /bin/bash
 endif
 .SHELLFLAGS := -eu -o pipefail -c
 
+-include .env
+
 PROJECT_ID ?= schwab-assessment-gke
-BILLING_ACCOUNT_ID ?= 000000-000000-000000
-ADMIN_CIDR ?= 203.0.113.10/32
+BILLING_ACCOUNT_ID ?=
+ADMIN_CIDR ?=
 GCLOUD_CONFIGURATION ?= schwab-assessment
 PRIMARY_REGION ?= us-central1
 SECONDARY_REGION ?= us-east4
@@ -65,7 +67,7 @@ local-verify:
 	$(call pending_target,local-verify)
 
 bootstrap:
-	$(call pending_target,bootstrap)
+	@bash ./scripts/terraform-stack.sh infra/00-bootstrap apply
 
 global:
 	$(call pending_target,global)
