@@ -13,6 +13,7 @@ locals {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "serviceusage.googleapis.com",
+    "storage.googleapis.com",
   ])
 
   tls_services = trimspace(var.domain_name) == "" ? toset([]) : toset([

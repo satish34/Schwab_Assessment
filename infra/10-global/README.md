@@ -2,8 +2,9 @@
 
 This stack creates the shared VPC, regional GKE ranges, Artifact Registry,
 global IP, health-check firewall, BigQuery log sink, and scoped node, build,
-and dashboard service accounts. It also removes the unused default VPC and
-strips Editor from default service accounts.
+and dashboard service accounts. It owns the private Cloud Build source bucket,
+where source archives expire after seven days. It also removes the unused
+default VPC and strips Editor from default service accounts.
 
 The existing project is imported with `auto_create_network = false`. Because
 the provider only removes the default VPC while creating a project, a one-time

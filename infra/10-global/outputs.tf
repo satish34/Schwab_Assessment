@@ -67,6 +67,10 @@ output "build_service_account_email" {
   value = google_service_account.build.email
 }
 
+output "build_source_bucket" {
+  value = google_storage_bucket.build_source.name
+}
+
 output "node_service_account_emails" {
   value = { for region, account in google_service_account.node : region => account.email }
 }

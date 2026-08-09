@@ -809,3 +809,55 @@ patterns for actual keys, tokens, and the private assignment name.
 Verification and outcome:
 Resolved after the guarded rerun; the interview notebook remains ignored and
 unstaged.
+
+## 2026-08-08 22:22 CDT - Short command timeout stopped the build launcher
+
+Command/operation:
+First `make build` invocation through the command runner.
+
+Symptom:
+The runner stopped the local launcher after about five seconds. Cloud Build
+listed no submitted build.
+
+Hypothesis and change:
+The launcher needs a long-lived yielded process while it audits and uploads the
+source. Check the live build list before retrying, then use the long timeout.
+
+Verification and outcome:
+Resolved. The build list was empty, so no duplicate build was created; the
+second invocation reached source upload.
+
+## 2026-08-08 22:23 CDT - Dedicated builder could not read staged source
+
+Command/operation:
+Cloud Build submission for commit `7245354`.
+
+Symptom:
+The source archive uploaded, but submission returned 403 because
+`risk-cloud-build` lacked `storage.objects.get` on the default source bucket.
+
+Hypothesis and change:
+The custom execution identity had logging and registry permissions but not
+source-bucket access. Adopt the generated bucket into Terraform, enforce
+uniform private access, grant that identity bucket-scoped Object Viewer, and
+make the submit command use this exact managed staging path.
+
+Verification and outcome:
+Pending the reviewed Terraform import, plan, apply, zero-drift check, and a
+successful immutable-image build.
+
+## 2026-08-08 22:24 CDT - Troubleshooting read used the wrong directory
+
+Command/operation:
+Read the recent troubleshooting entries while preparing the build-IAM fix.
+
+Symptom:
+`docs/TROUBLESHOOTING.md` did not exist.
+
+Hypothesis and change:
+The repository keeps the timeline at its root. Locate it with `rg --files` and
+read `TROUBLESHOOTING.md`.
+
+Verification and outcome:
+Resolved. The root timeline was found and updated; no repository content was
+lost or replaced.

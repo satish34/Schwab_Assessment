@@ -63,6 +63,7 @@ jq -e \
       "us-east4": $node_use4
     })
     and (.build_service_account_email.value == $build)
+    and (.build_source_bucket.value == ($project + "_cloudbuild"))
     and (.grafana_reader_email.value == $grafana)
   ' <<<"$outputs_json" >/dev/null || {
     printf 'The 10-global Terraform outputs do not match the frozen contract.\n' >&2
@@ -242,6 +243,54 @@ jq -e \
     )
   ' <<<"$registry_policy" >/dev/null || {
     printf 'Artifact Registry reader/writer IAM does not match the node/build identities.\n' >&2
+  exit 1
+}
+
+build_source_bucket="${PROJECT_ID}_cloudbuild"
+build_source_json="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" storage buckets describe \
+    "gs://$build_source_bucket" \
+    --format=json
+)"
+jq -e \
+  --arg bucket "$build_source_bucket" \
+  '
+    (.name == $bucket)
+    and (.location == "US")
+    and (.default_storage_class == "STANDARD")
+    and (.uniform_bucket_level_access == true)
+    and (.public_access_prevention == "enforced")
+    and (.soft_delete_policy.retentionDurationSeconds == "0")
+    and (.lifecycle_config.rule == [{
+      "action": {"type": "Delete"},
+      "condition": {"age": 7, "matchesPrefix": ["source/"]}
+    }])
+  ' <<<"$build_source_json" >/dev/null || {
+    printf 'The Cloud Build source bucket is not private or does not match its contract.\n' >&2
+    exit 1
+  }
+
+build_source_policy="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" storage buckets get-iam-policy \
+    "gs://$build_source_bucket" \
+    --format=json
+)"
+jq -e \
+  --arg build "serviceAccount:$build_sa" \
+  '
+    ([
+      .bindings[]
+      | select(.role == "roles/storage.objectViewer")
+      | .members[]?
+      | select(. == $build)
+    ] | length == 1)
+    and ([
+      .bindings[]
+      | .members[]?
+      | select(. == "allUsers" or . == "allAuthenticatedUsers")
+    ] | length == 0)
+  ' <<<"$build_source_policy" >/dev/null || {
+    printf 'The Cloud Build identity cannot read the private source bucket.\n' >&2
     exit 1
   }
 

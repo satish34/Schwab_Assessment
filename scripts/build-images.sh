@@ -54,8 +54,10 @@ fi
 
 repository="$(terraform -chdir=infra/10-global output -raw artifact_registry_repository)"
 build_service_account="$(terraform -chdir=infra/10-global output -raw build_service_account_email)"
+build_source_bucket="$(terraform -chdir=infra/10-global output -raw build_source_bucket)"
 expected_repository="us-central1-docker.pkg.dev/$PROJECT_ID/risk"
 expected_build_service_account="risk-cloud-build@$PROJECT_ID.iam.gserviceaccount.com"
+expected_build_source_bucket="${PROJECT_ID}_cloudbuild"
 
 [[ "$repository" == "$expected_repository" ]] || {
   printf 'Terraform returned unexpected Artifact Registry repository %s.\n' "$repository" >&2
@@ -64,6 +66,11 @@ expected_build_service_account="risk-cloud-build@$PROJECT_ID.iam.gserviceaccount
 [[ "$build_service_account" == "$expected_build_service_account" ]] || {
   printf 'Terraform returned unexpected build service account %s.\n' \
     "$build_service_account" >&2
+  exit 1
+}
+[[ "$build_source_bucket" == "$expected_build_source_bucket" ]] || {
+  printf 'Terraform returned unexpected build source bucket %s.\n' \
+    "$build_source_bucket" >&2
   exit 1
 }
 
@@ -168,6 +175,7 @@ gcloud --configuration="$GCLOUD_CONFIGURATION" \
   --project="$PROJECT_ID" \
   builds submit . \
   --config=cloudbuild.yaml \
+  --gcs-source-staging-dir="gs://$build_source_bucket/source" \
   --ignore-file=.gcloudignore \
   --region="$build_region" \
   --service-account="$service_account_resource" \
