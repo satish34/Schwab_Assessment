@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
+bash "$repo_root/scripts/ensure-gke-auth-plugin.sh"
 
 expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
@@ -162,8 +164,8 @@ render_overlay() {
     "$rendered"; then
     fail "$region render still contains an image placeholder or forbidden latest tag"
   fi
-  [[ "$(grep -Fc -- "image: $app_a_image" "$rendered")" == "1" ]] \
-    || fail "$region render does not contain exactly one expected App A image"
+  [[ "$(grep -Fc -- "image: $app_a_image" "$rendered")" == "3" ]] \
+    || fail "$region render does not contain exactly three expected App A images"
   [[ "$(grep -Fc -- "image: $app_b_image" "$rendered")" == "1" ]] \
     || fail "$region render does not contain exactly one expected App B image"
 }
@@ -177,6 +179,14 @@ kubectl --context=gke-risk-usc1 --request-timeout=60s \
   apply -f "$work_dir/us-central1.yaml"
 kubectl --context=gke-risk-use4 --request-timeout=60s \
   apply -f "$work_dir/us-east4.yaml"
+
+# The first rollout used one shared App A Deployment/HPA. Remove only those
+# exact superseded controllers after the three zonal shards are declared.
+for context in gke-risk-usc1 gke-risk-use4; do
+  kubectl --context="$context" --namespace=risk-system --request-timeout=60s \
+    delete deployment/app-a-gateway horizontalpodautoscaler/app-a-gateway \
+    --ignore-not-found=true --wait=true --timeout=2m
+done
 
 bash scripts/verify-workloads.sh "$git_sha"
 printf 'Applied and verified both regional workload cells at %s.\n' "$git_sha"

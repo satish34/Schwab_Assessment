@@ -21,6 +21,30 @@ images:
     newTag: GIT_SHA
 patches:
   - target:
+      kind: Deployment
+      name: app-a-gateway-a
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          topology.kubernetes.io/zone: us-east4-a
+  - target:
+      kind: Deployment
+      name: app-a-gateway-b
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          topology.kubernetes.io/zone: us-east4-b
+  - target:
+      kind: Deployment
+      name: app-a-gateway-c
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          topology.kubernetes.io/zone: us-east4-c
+  - target:
       kind: Service
       name: app-a-gateway
     patch: |-

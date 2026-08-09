@@ -94,7 +94,6 @@ resource "google_compute_global_forwarding_rule" "http" {
   description           = local.tls_enabled ? "Public HTTP redirect." : "Public HTTP application endpoint."
   ip_address            = local.global_outputs.global_ipv4_address
   ip_protocol           = "TCP"
-  ip_version            = "IPV4"
   port_range            = "80"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   network_tier          = "PREMIUM"
@@ -125,7 +124,6 @@ resource "google_compute_global_forwarding_rule" "https" {
   description           = "Public HTTPS application endpoint."
   ip_address            = local.global_outputs.global_ipv4_address
   ip_protocol           = "TCP"
-  ip_version            = "IPV4"
   port_range            = "443"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   network_tier          = "PREMIUM"

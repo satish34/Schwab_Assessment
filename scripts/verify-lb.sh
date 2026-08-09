@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
+bash "$repo_root/scripts/ensure-gke-auth-plugin.sh"
 
 expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"

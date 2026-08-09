@@ -65,6 +65,11 @@ Each regional custom NEG name is reused across that region's three zones.
 Terraform looks up six zonal `GCE_VM_IP_PORT` NEGs. It must not use a regional
 NEG data source.
 
+App A uses three zonal shard Deployments per region. Each shard is pinned to
+one frozen zone and has an HPA range of 1-2, for a regional total of 3-6. All
+shards keep `app: app-a-gateway`, so one ClusterIP Service and one PDB cover
+them. App B remains one Deployment with an HPA range of 2-6.
+
 ## Runtime environment
 
 ```text
@@ -252,12 +257,15 @@ Per region:
 
 | Workload | Replicas | CPU request/limit | Memory request/limit |
 |---|---:|---|---|
-| App A | 2 | `250m` / `500m` | `1Gi` / `1.25Gi` |
-| App B | 2 | `250m` / `500m` | `512Mi` / `768Mi` |
+| App A (each of three zonal shards) | 1-2 (3-6 total) | `250m` / `500m` | `1Gi` / `1.25Gi` |
+| App B | 2-6 | `250m` / `500m` | `512Mi` / `768Mi` |
 
-Both Deployments use HPA v2 (`min=2`, `max=6`, CPU target `70%`), PDB
-`minAvailable: 1`, RollingUpdate `maxUnavailable: 0` and `maxSurge: 1`, soft
-topology spreading, and a 30-second termination grace period.
+Each App A shard has an HPA v2 with `min=1`, `max=2`, and a `70%` CPU
+target. App B has an HPA v2 with `min=2`, `max=6`, and the same target. App A
+uses one shared PDB with `minAvailable: 2`; App B uses `minAvailable: 1`.
+Every Deployment uses RollingUpdate with `maxUnavailable: 0`, `maxSurge: 1`,
+and a 30-second termination grace period. App A placement is fixed by each
+shard's zonal node selector; App B uses soft zonal topology spreading.
 
 ## Load-balancer contract
 

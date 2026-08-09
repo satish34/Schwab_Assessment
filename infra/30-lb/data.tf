@@ -38,6 +38,13 @@ resource "terraform_data" "global_contract" {
 
     precondition {
       condition = alltrue([
+        for neg in data.google_compute_network_endpoint_group.app_a : neg.size >= 1
+      ])
+      error_message = "Every frozen zonal App A NEG must contain a serving endpoint before 30-lb is applied."
+    }
+
+    precondition {
+      condition = alltrue([
         for region in ["us-central1", "us-east4"] :
         endswith(
           try(local.global_outputs.subnetwork_self_links[region], ""),
@@ -132,9 +139,9 @@ resource "terraform_data" "neg_contract" {
         sum([
           for zone, neg in data.google_compute_network_endpoint_group.app_a : neg.size
           if local.negs[zone].region == region
-        ]) >= 2
+        ]) >= 3
       ])
-      error_message = "Each region must have at least two registered App A NEG endpoints before 30-lb is applied."
+      error_message = "Each region must have at least three registered App A NEG endpoints before 30-lb is applied."
     }
   }
 }

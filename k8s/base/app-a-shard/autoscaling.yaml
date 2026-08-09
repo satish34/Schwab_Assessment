@@ -1,15 +1,15 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: app-b-engine
+  name: app-a-gateway
   namespace: risk-system
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: app-b-engine
-  minReplicas: 2
-  maxReplicas: 6
+    name: app-a-gateway
+  minReplicas: 1
+  maxReplicas: 2
   metrics:
     - type: Resource
       resource:

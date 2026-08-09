@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
+bash "$repo_root/scripts/ensure-gke-auth-plugin.sh"
 
 expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
@@ -182,8 +184,12 @@ workload_ready() {
   local context="$1"
   local deployment="$2"
   local image="$3"
+  local min_replicas="$4"
+  local max_replicas="$5"
   local deployment_json
+  local hpa_json
   local pods_json
+  local replicas
 
   deployment_json="$(
     kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
@@ -193,45 +199,282 @@ workload_ready() {
     kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
       get pods --selector="app=$deployment" -o json 2>/dev/null
   )" || return 1
+  hpa_json="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+      get horizontalpodautoscaler "$deployment" -o json 2>/dev/null
+  )" || return 1
 
-  jq -e --arg image "$image" '
+  jq -e \
+    --arg image "$image" \
+    --argjson min "$min_replicas" \
+    --argjson max "$max_replicas" '
+    (.spec.replicas // 0) as $replicas |
     (.metadata.generation <= (.status.observedGeneration // 0)) and
-    (.status.replicas == 2) and
-    (.status.updatedReplicas == 2) and
-    (.status.readyReplicas == 2) and
-    (.status.availableReplicas == 2) and
+    ($replicas >= $min and $replicas <= $max) and
+    (.status.replicas == $replicas) and
+    (.status.updatedReplicas == $replicas) and
+    (.status.readyReplicas == $replicas) and
+    (.status.availableReplicas == $replicas) and
     ((.status.unavailableReplicas // 0) == 0) and
-    ([.spec.template.spec.containers[].image] | index($image) != null)
+    ([.spec.template.spec.containers[].image] == [$image])
   ' <<<"$deployment_json" >/dev/null || return 1
 
-  jq -e --arg image "$image" '
-    (.items | length) == 2 and
+  replicas="$(jq -r '.spec.replicas' <<<"$deployment_json" | tr -d '\r')"
+  jq -e --argjson replicas "$replicas" \
+    --argjson min "$min_replicas" --argjson max "$max_replicas" '
+    any(.status.conditions[]?; .type == "AbleToScale" and .status == "True") and
+    any(.status.conditions[]?; .type == "ScalingActive" and .status == "True") and
+    (.spec.scaleTargetRef == {
+      "apiVersion":"apps/v1",
+      "kind":"Deployment",
+      "name":.metadata.name
+    }) and
+    (.spec.minReplicas == $min) and
+    (.spec.maxReplicas == $max) and
+    (.spec.metrics == [{
+      "type":"Resource",
+      "resource":{
+        "name":"cpu",
+        "target":{"type":"Utilization","averageUtilization":70}
+      }
+    }]) and
+    (.status.currentReplicas == $replicas) and
+    (.status.desiredReplicas == $replicas)
+  ' <<<"$hpa_json" >/dev/null || return 1
+
+  jq -e --arg image "$image" --argjson replicas "$replicas" '
+    (.items | length) == $replicas and
     all(.items[];
       (.metadata.deletionTimestamp == null) and
       (.status.phase == "Running") and
       any(.status.conditions[]?; .type == "Ready" and .status == "True") and
-      all(.spec.containers[]; .image == $image)
+      ([.spec.containers[].image] == [$image]) and
+      ([.status.containerStatuses[]?.image] == [$image]) and
+      all(.status.containerStatuses[]?; .ready == true)
     )
   ' <<<"$pods_json" >/dev/null
+}
+
+app_a_shards_ready() {
+  local context="$1"
+  local image="$2"
+  local zone_a="$3"
+  local zone_b="$4"
+  local zone_c="$5"
+  local deployments_json
+  local hpas_json
+  local pods_json
+  local deployment_name
+  local replicas
+  local shard
+  local expected_zone
+  local node_name
+  local actual_zone
+
+  deployments_json="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+      get deployments --selector='app=app-a-gateway' -o json 2>/dev/null
+  )" || return 1
+  pods_json="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+      get pods --selector='app=app-a-gateway' -o json 2>/dev/null
+  )" || return 1
+  hpas_json="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+      get horizontalpodautoscalers \
+        app-a-gateway-a app-a-gateway-b app-a-gateway-c -o json 2>/dev/null
+  )" || return 1
+
+  jq -e \
+    --arg image "$image" \
+    --arg zone_a "$zone_a" \
+    --arg zone_b "$zone_b" \
+    --arg zone_c "$zone_c" \
+    '
+      def expected_shard($name):
+        if $name == "app-a-gateway-a" then "a"
+        elif $name == "app-a-gateway-b" then "b"
+        elif $name == "app-a-gateway-c" then "c"
+        else ""
+        end;
+      def expected_zone($shard):
+        if $shard == "a" then $zone_a
+        elif $shard == "b" then $zone_b
+        elif $shard == "c" then $zone_c
+        else ""
+        end;
+      ([.items[].metadata.name] | sort) == [
+        "app-a-gateway-a",
+        "app-a-gateway-b",
+        "app-a-gateway-c"
+      ] and
+      (([.items[].status.readyReplicas] | add) >= 3) and
+      (([.items[].status.readyReplicas] | add) <= 6) and
+      all(.items[];
+        expected_shard(.metadata.name) as $shard |
+        (.spec.replicas // 0) as $replicas |
+        (.metadata.generation <= (.status.observedGeneration // 0)) and
+        ($replicas >= 1 and $replicas <= 2) and
+        (.metadata.labels["app-a-shard"] == $shard) and
+        (.spec.selector.matchLabels == {
+          "app":"app-a-gateway", "app-a-shard":$shard
+        }) and
+        (.spec.template.metadata.labels["app-a-shard"] == $shard) and
+        (.status.replicas == $replicas) and
+        (.status.updatedReplicas == $replicas) and
+        (.status.readyReplicas == $replicas) and
+        (.status.availableReplicas == $replicas) and
+        ((.status.unavailableReplicas // 0) == 0) and
+        (.spec.template.spec.nodeSelector["topology.kubernetes.io/zone"]
+          == expected_zone($shard)) and
+        ([.spec.template.spec.containers[].image] == [$image])
+      )
+    ' <<<"$deployments_json" >/dev/null || return 1
+
+  jq -e '
+      def expected_shard($name):
+        if $name == "app-a-gateway-a" then "a"
+        elif $name == "app-a-gateway-b" then "b"
+        elif $name == "app-a-gateway-c" then "c"
+        else ""
+        end;
+      def reconciled_hpa:
+        any(.status.conditions[]?; .type == "AbleToScale" and .status == "True") and
+        any(.status.conditions[]?; .type == "ScalingActive" and .status == "True");
+      ([.items[].metadata.name] | sort) == [
+        "app-a-gateway-a",
+        "app-a-gateway-b",
+        "app-a-gateway-c"
+      ] and
+      all(.items[];
+        expected_shard(.metadata.name) as $shard |
+        reconciled_hpa and
+        (.metadata.labels["app-a-shard"] == $shard) and
+        (.spec.scaleTargetRef == {
+          "apiVersion":"apps/v1",
+          "kind":"Deployment",
+          "name":.metadata.name
+        }) and
+        (.spec.minReplicas == 1) and
+        (.spec.maxReplicas == 2) and
+        (.spec.metrics == [{
+          "type":"Resource",
+          "resource":{
+            "name":"cpu",
+            "target":{"type":"Utilization","averageUtilization":70}
+          }
+        }]) and
+        (.status.currentReplicas >= 1 and .status.currentReplicas <= 2) and
+        (.status.desiredReplicas == .status.currentReplicas)
+      )
+    ' <<<"$hpas_json" >/dev/null || return 1
+
+  for shard in a b c; do
+    deployment_name="app-a-gateway-$shard"
+    replicas="$(
+      jq -r --arg name "$deployment_name" \
+        '.items[] | select(.metadata.name == $name) | .spec.replicas' \
+        <<<"$deployments_json" | tr -d '\r'
+    )"
+    jq -e --arg name "$deployment_name" --argjson replicas "$replicas" '
+      [.items[] | select(
+        .metadata.name == $name and
+        .status.currentReplicas == $replicas and
+        .status.desiredReplicas == $replicas
+      )] | length == 1
+    ' <<<"$hpas_json" >/dev/null || return 1
+  done
+
+  jq -e \
+    --arg image "$image" \
+    --arg zone_a "$zone_a" \
+    --arg zone_b "$zone_b" \
+    --arg zone_c "$zone_c" \
+    '
+      def expected_zone($shard):
+        if $shard == "a" then $zone_a
+        elif $shard == "b" then $zone_b
+        elif $shard == "c" then $zone_c
+        else ""
+        end;
+      def shard_count($shard):
+        [.items[] | select(.metadata.labels["app-a-shard"] == $shard)] | length;
+      ((.items | length) >= 3 and (.items | length) <= 6) and
+      (shard_count("a") >= 1 and shard_count("a") <= 2) and
+      (shard_count("b") >= 1 and shard_count("b") <= 2) and
+      (shard_count("c") >= 1 and shard_count("c") <= 2) and
+      all(.items[];
+        (.metadata.deletionTimestamp == null) and
+        (.status.phase == "Running") and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True") and
+        ([.spec.containers[].image] == [$image]) and
+        ([.status.containerStatuses[]?.image] == [$image]) and
+        all(.status.containerStatuses[]?; .ready == true) and
+        (.spec.nodeSelector["topology.kubernetes.io/zone"]
+          == expected_zone(.metadata.labels["app-a-shard"])) and
+        ((.spec.nodeName // "") | length > 0) and
+        ((.status.podIP // "") | length > 0)
+      )
+    ' <<<"$pods_json" >/dev/null || return 1
+
+  for shard in a b c; do
+    case "$shard" in
+      a) expected_zone="$zone_a" ;;
+      b) expected_zone="$zone_b" ;;
+      c) expected_zone="$zone_c" ;;
+    esac
+
+    while IFS= read -r node_name; do
+      [[ -n "$node_name" ]] || return 1
+      actual_zone="$(
+        kubectl --context="$context" --request-timeout=20s get node "$node_name" \
+          -o jsonpath='{.metadata.labels.topology\.kubernetes\.io/zone}' 2>/dev/null
+      )" || return 1
+      [[ "$actual_zone" == "$expected_zone" ]] || return 1
+    done < <(
+      jq -r --arg shard "$shard" '
+        .items[]
+        | select(.metadata.labels["app-a-shard"] == $shard)
+        | .spec.nodeName
+      ' <<<"$pods_json" | tr -d '\r'
+    )
+  done
 }
 
 wait_for_workloads() {
   local context="$1"
   local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$git_sha"
   local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
+  local zone_a
+  local zone_b
+  local zone_c
   local deadline=$((SECONDS + workload_timeout_seconds))
 
+  case "$context" in
+    gke-risk-usc1)
+      zone_a=us-central1-a
+      zone_b=us-central1-b
+      zone_c=us-central1-c
+      ;;
+    gke-risk-use4)
+      zone_a=us-east4-a
+      zone_b=us-east4-b
+      zone_c=us-east4-c
+      ;;
+    *) fail "unexpected workload context $context" ;;
+  esac
+
   while ((SECONDS < deadline)); do
-    if workload_ready "$context" app-a-gateway "$app_a_image" \
-      && workload_ready "$context" app-b-engine "$app_b_image"; then
-      printf '%s has exactly two ready App A and two ready App B Pods.\n' "$context"
+    if app_a_shards_ready "$context" "$app_a_image" "$zone_a" "$zone_b" "$zone_c" \
+      && workload_ready "$context" app-b-engine "$app_b_image" 2 6; then
+      printf '%s has 3-6 ready App A and 2-6 ready App B Pods.\n' "$context"
       return 0
     fi
     sleep 5
   done
 
   print_diagnostics "$context"
-  fail "$context workloads did not reach the exact two-plus-two ready state within ${workload_timeout_seconds}s"
+  fail "$context workloads did not reach the reconciled autoscaling state within ${workload_timeout_seconds}s"
 }
 
 verify_services() {
@@ -260,7 +503,7 @@ verify_services() {
   jq -e '
     (.spec.type == "ClusterIP") and
     (.spec.ports == [{"name":"http","port":8080,"protocol":"TCP","targetPort":"http"}]) and
-    ((.metadata.annotations["cloud.google.com/neg"] // "") == "") and
+    ((.metadata.annotations["cloud.google.com/neg"] // "{}" | fromjson) == {"ingress":false}) and
     ((.spec.externalIPs // []) | length == 0)
   ' <<<"$app_b_json" >/dev/null \
     || fail "$context App B Service is exposed or carries an unexpected NEG annotation"

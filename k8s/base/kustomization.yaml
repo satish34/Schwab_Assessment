@@ -4,7 +4,9 @@ resources:
   - namespace.yaml
   - serviceaccounts.yaml
   - fault-config.yaml
-  - app-a-deployment.yaml
+  - app-a-shards/a
+  - app-a-shards/b
+  - app-a-shards/c
   - app-b-deployment.yaml
   - services.yaml
   - autoscaling.yaml

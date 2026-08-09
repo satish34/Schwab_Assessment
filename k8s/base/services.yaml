@@ -18,6 +18,8 @@ kind: Service
 metadata:
   name: app-b-engine
   namespace: risk-system
+  annotations:
+    cloud.google.com/neg: '{"ingress": false}'
 spec:
   type: ClusterIP
   selector:

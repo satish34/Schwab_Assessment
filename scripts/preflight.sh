@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
+bash "$repo_root/scripts/ensure-gke-auth-plugin.sh"
+
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${BILLING_ACCOUNT_ID:?BILLING_ACCOUNT_ID is required}"
 : "${ADMIN_CIDR:?ADMIN_CIDR is required}"
@@ -13,7 +18,7 @@ if [[ "$ADMIN_CIDR" == "0.0.0.0/0" || ! "$ADMIN_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]
   exit 1
 fi
 
-required_tools=(git terraform docker jq make java dotnet gcloud kubectl curl)
+required_tools=(git terraform docker jq make java dotnet gcloud kubectl curl gke-gcloud-auth-plugin)
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf 'Missing required tool: %s\n' "$tool" >&2
