@@ -5,9 +5,11 @@ global IP, health-check firewall, BigQuery log sink, and scoped node, build,
 and dashboard service accounts. It also removes the unused default VPC and
 strips Editor from default service accounts.
 
-The existing project is imported so `auto_create_network = false` can remove
-the default VPC. Its deletion policy is `ABANDON`, so destroying this stack
-cannot delete the project. Keep the local state for ordered teardown.
+The existing project is imported with `auto_create_network = false`. Because
+the provider only removes the default VPC while creating a project, a one-time
+Terraform migration checks its signature, firewall rules, account, project,
+and VM use before removing it. A customized or in-use network is rejected.
+The project deletion policy is `ABANDON`, so this stack cannot delete it.
 Destroying the stack does remove the exported-log dataset after evidence is
 saved.
 

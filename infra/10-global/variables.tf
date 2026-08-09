@@ -9,6 +9,11 @@ variable "billing_account_id" {
   sensitive   = true
 }
 
+variable "gcloud_configuration" {
+  description = "Named gcloud configuration already verified by the wrapper."
+  type        = string
+}
+
 variable "domain_name" {
   description = "Optional owned domain or delegated subdomain for trusted HTTPS."
   type        = string

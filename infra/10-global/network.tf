@@ -4,6 +4,8 @@ resource "google_compute_network" "risk" {
 
   auto_create_subnetworks = false
   routing_mode            = "GLOBAL"
+
+  depends_on = [terraform_data.default_network_absent]
 }
 
 resource "google_compute_subnetwork" "cell" {

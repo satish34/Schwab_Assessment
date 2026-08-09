@@ -163,7 +163,8 @@ address_json="$(
 )"
 jq -e '
   (.addressType == "EXTERNAL")
-  and (.ipVersion == "IPV4")
+  and ((.ipVersion // "IPV4") == "IPV4")
+  and (.address | test("^([0-9]{1,3}\\.){3}[0-9]{1,3}$"))
   and (.status == "RESERVED" or .status == "IN_USE")
 ' <<<"$address_json" >/dev/null || {
   printf 'The global external IPv4 address is not reserved or in use.\n' >&2

@@ -1,3 +1,4 @@
 project_id         = "example-project-id"
 billing_account_id = "000000-000000-000000"
+gcloud_configuration = "schwab-assessment"
 domain_name        = ""

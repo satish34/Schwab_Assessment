@@ -50,9 +50,10 @@ fi
 
 TF_VAR_project_id="$PROJECT_ID"
 TF_VAR_billing_account_id="$BILLING_ACCOUNT_ID"
+TF_VAR_gcloud_configuration="$GCLOUD_CONFIGURATION"
 TF_VAR_domain_name="${DOMAIN_NAME:-}"
-export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_domain_name
-trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_domain_name' EXIT
+export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name
+trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name' EXIT
 
 run_terraform() {
   timeout --foreground --signal=INT "$terraform_timeout" terraform "$@"
