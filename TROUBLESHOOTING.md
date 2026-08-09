@@ -298,3 +298,21 @@ Run `scripts/terraform-stack.sh infra/00-bootstrap plan`.
 Outcome:
 Resolved. The Bash wrapper produced a clean plan: 13 additions, zero changes,
 and zero destroys.
+
+## 2026-08-08 20:34 CDT - PowerShell did not expand an `rg` glob
+
+Command/operation:
+Checked that exactly one BigQuery SQL file uses `APPROX_QUANTILES`.
+
+Symptom:
+`rg` received the literal `*.sql` path and returned no matches.
+
+Hypothesis:
+PowerShell does not expand that native-command glob in this context.
+
+Change/decision:
+Pass the containing directory to `rg` and let it recurse.
+
+Verification and outcome:
+The corrected check found exactly one quantiles query; all four SQL contract
+checks passed.
