@@ -36,6 +36,7 @@ TestResults/
 # Local tools and runtime artifacts
 .tools/
 .tmp/
+tmp/
 *.pid
 *.log
 docker-compose.override.yml

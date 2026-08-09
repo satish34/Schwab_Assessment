@@ -167,3 +167,84 @@ Outcome:
 Resolved. The corrected calls succeeded, and policy verification returned both
 `roles/billing.user` and `roles/billing.costsManager` for the requested
 account. The failed calls changed no IAM policy.
+
+## 2026-08-08 19:51 CDT - Non-elevated Chocolatey install failed
+
+Command/operation:
+Attempted noninteractive Chocolatey installation of GNU Make and Maven.
+
+Symptom:
+Chocolatey reported that the shell was not elevated, timed out at its
+confirmation prompt, and could not acquire/write its package directories.
+Neither package was installed by that command.
+
+Hypothesis:
+The machine-wide Chocolatey installation requires administrator elevation,
+which is unnecessary for this repository when user-level or containerized
+tools are available.
+
+Change/decision:
+Install GNU Make 4.4.1 through the user-level winget package and use the pinned
+`maven:3.9.11-eclipse-temurin-21` container for Java builds.
+
+Verification:
+`make --version` returns 4.4.1 and the pinned Maven container returns Maven
+3.9.11 on Java 21.
+
+Outcome:
+Resolved without elevation.
+
+## 2026-08-08 19:54 CDT - Optional .NET 8 SDK installer waited on elevation
+
+Command/operation:
+Attempted a silent winget installation of Microsoft .NET SDK 8.0.
+
+Symptom:
+The machine-level installer remained idle awaiting elevation and did not add an
+SDK. The installer processes were cancelled; `dotnet --list-sdks` remained at
+9.0.304.
+
+Hypothesis:
+Installing the additional machine-wide SDK requires administrator approval,
+but the existing .NET 9 SDK supports targeting `net8.0` and the .NET 8 runtime
+and targeting assets are already available.
+
+Change/decision:
+Do not require elevation. Prove compatibility by generating and compiling a
+temporary `net8.0` project with the existing SDK.
+
+Verification:
+The temporary `net8.0` Release build completed with zero warnings and zero
+errors.
+
+Outcome:
+Resolved; the repository can build its required .NET 8 application. After the
+user approved elevation, winget also installed the native .NET 8 SDK 8.0.408;
+`dotnet --list-sdks` now shows both 8.0.408 and 9.0.304.
+
+## 2026-08-08 19:56 CDT - Host bq CLI has Cloud SDK ACL corruption
+
+Command/operation:
+Ran `bq version` and inspected the failing bundled Python package paths and
+their ACL boundaries.
+
+Symptom:
+The host `bq` 2.1.17 fails before authentication with access denied under
+multiple bundled dependencies, including `absl/flags`. The current
+non-elevated session cannot repair those SDK directories safely.
+
+Hypothesis:
+This is broad Google Cloud SDK installation ACL corruption, not a project,
+authentication, or BigQuery configuration error.
+
+Change/decision:
+Do not mutate machine-wide ACLs. Use a pinned Google Cloud CLI container for
+`bq` operations; a future elevated Cloud SDK repair is optional host
+maintenance and not an assessment dependency.
+
+Verification:
+Require the pinned container to return its `bq` version before Gate 0 closes.
+
+Outcome:
+Resolved. The pinned `google-cloud-cli:525.0.0-slim` container returned
+BigQuery CLI 2.1.17 successfully.
