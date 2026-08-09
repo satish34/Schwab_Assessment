@@ -1,0 +1,35 @@
+server:
+  port: 8080
+  shutdown: graceful
+  error:
+    include-message: never
+    include-stacktrace: never
+
+spring:
+  application:
+    name: app-a-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
+  main:
+    banner-mode: "off"
+  jackson:
+    deserialization:
+      fail-on-trailing-tokens: true
+      fail-on-unknown-properties: true
+
+logging:
+  level:
+    root: WARN
+
+risk:
+  region: "${RISK_REGION:local}"
+  cluster: "${RISK_CLUSTER:local}"
+  service-version: "${SERVICE_VERSION:dev}"
+  app-b-base-url: "${APP_B_BASE_URL:http://app-b-engine.risk-system.svc.cluster.local:8080}"
+  google-cloud-project: "${GOOGLE_CLOUD_PROJECT:}"
+  connect-timeout: 500ms
+  response-timeout: 750ms
+  probe-enabled: true
+  probe-interval-ms: 2000
+  cell-failure-threshold: 3
+  cell-recovery-threshold: 5

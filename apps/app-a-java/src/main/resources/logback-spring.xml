@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <springProperty scope="context" name="rootLevel" source="logging.level.root" defaultValue="WARN"/>
+  <springProperty scope="context" name="serviceVersion" source="risk.service-version" defaultValue="dev"/>
+  <springProperty scope="context" name="region" source="risk.region" defaultValue="local"/>
+  <springProperty scope="context" name="cluster" source="risk.cluster" defaultValue="local"/>
+  <springProperty scope="context" name="googleCloudProject" source="risk.google-cloud-project" defaultValue=""/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+      <charset>UTF-8</charset>
+      <layout class="com.schwab.risk.gateway.telemetry.FrozenStructuredLogLayout">
+        <serviceVersion>${serviceVersion}</serviceVersion>
+        <region>${region}</region>
+        <cluster>${cluster}</cluster>
+        <googleCloudProject>${googleCloudProject}</googleCloudProject>
+      </layout>
+    </encoder>
+  </appender>
+
+  <root level="${rootLevel}">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>
