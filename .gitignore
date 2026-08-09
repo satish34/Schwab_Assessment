@@ -1,0 +1,52 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.credentials.json
+service-account*.json
+grafana-key*.json
+.gcloud/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Java
+**/target/
+.mvn/timing.properties
+
+# .NET
+**/bin/
+**/obj/
+TestResults/
+
+# Local tools and runtime artifacts
+.tools/
+.tmp/
+*.pid
+*.log
+docker-compose.override.yml
+
+# IDE and OS
+.idea/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Evidence working files that may contain transient command output
+evidence/tmp/
