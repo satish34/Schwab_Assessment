@@ -1,3 +1,3 @@
-project_id         = "schwab-assessment-gke"
+project_id         = "example-project-id"
 billing_account_id = "000000-000000-000000"
 domain_name        = ""

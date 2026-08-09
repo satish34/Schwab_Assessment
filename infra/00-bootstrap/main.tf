@@ -1,5 +1,5 @@
 locals {
-  required_services = toset([
+  core_services = toset([
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
     "billingbudgets.googleapis.com",
@@ -13,6 +13,13 @@ locals {
     "monitoring.googleapis.com",
     "serviceusage.googleapis.com",
   ])
+
+  tls_services = trimspace(var.domain_name) == "" ? toset([]) : toset([
+    "certificatemanager.googleapis.com",
+    "dns.googleapis.com",
+  ])
+
+  required_services = setunion(local.core_services, local.tls_services)
 }
 
 resource "google_project_service" "required" {

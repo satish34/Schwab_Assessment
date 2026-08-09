@@ -11,12 +11,13 @@ PROJECT_ID ?= schwab-assessment-gke
 BILLING_ACCOUNT_ID ?=
 ADMIN_CIDR ?=
 GCLOUD_CONFIGURATION ?= schwab-assessment
+DOMAIN_NAME ?=
 PRIMARY_REGION ?= us-central1
 SECONDARY_REGION ?= us-east4
 MAVEN_IMAGE ?= maven:3.9.11-eclipse-temurin-21
 GCLOUD_IMAGE ?= gcr.io/google.com/cloudsdktool/google-cloud-cli:525.0.0-slim
 
-export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION
+export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION DOMAIN_NAME
 export PRIMARY_REGION SECONDARY_REGION MAVEN_IMAGE GCLOUD_IMAGE
 
 .PHONY: help preflight fmt test local-up local-verify bootstrap global clusters
@@ -70,7 +71,7 @@ bootstrap:
 	@bash ./scripts/terraform-stack.sh infra/00-bootstrap apply
 
 global:
-	$(call pending_target,global)
+	@bash ./scripts/terraform-stack.sh infra/10-global apply
 
 clusters:
 	$(call pending_target,clusters)
