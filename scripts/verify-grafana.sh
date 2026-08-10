@@ -16,6 +16,7 @@ error_sql="$repo_root/observability/grafana/queries/01_error_rate_by_cell.sql"
 latency_sql="$repo_root/observability/grafana/queries/02_latency_by_cell.sql"
 datasources="$repo_root/observability/grafana/provisioning/datasources.yaml"
 dashboard_provider="$repo_root/observability/grafana/provisioning/dashboards.yaml"
+maximum_bytes_billed="104857600"
 
 for command_name in jq grep; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -31,7 +32,7 @@ jq -e '
   and ([.panels[].id] | sort == [1, 2, 3, 4])
   and ([.panels[].type] | all(. == "timeseries"))
   and ([.panels[].datasource.uid] | sort | unique == ["currency-bigquery", "currency-cloud-monitoring"])
-  and (.panels[] | select(.id == 1) | .title == "Application error rate by cell")
+  and (.panels[] | select(.id == 1) | .title == "Application errors and auth rejections by cell")
   and (.panels[] | select(.id == 2) | .title == "Request latency percentiles by cell")
   and (.panels[] | select(.id == 3) | .title == "Pod restarts by cell and service")
   and (.panels[] | select(.id == 4) | .title == "CPU and memory utilization by cell and service")
@@ -50,6 +51,15 @@ jq -e '
       and (.rawSql | contains("jsonPayload.method"))
       and (.rawSql | contains("GET"))
     )
+  )
+  and (
+    .panels[]
+    | select(.id == 1)
+    | .targets[0].rawSql
+    | contains("/internal/exchange-rates")
+      and contains("app-b-engine")
+      and contains("AUTH_REJECTED")
+      and contains("status_code = 401")
   )
   and (
     [.panels[] | .targets[] | select(.datasource.uid == "currency-cloud-monitoring")]
@@ -103,6 +113,14 @@ grep -Fq 'uid: currency-cloud-monitoring' "$datasources"
 grep -Fq 'name: Currency BigQuery' "$datasources"
 grep -Fq 'name: Currency Cloud Monitoring' "$datasources"
 [[ "$(grep -Fc 'authenticationType: gce' "$datasources")" == "2" ]]
+[[ "$(grep -Ec '^[[:space:]]+MaxBytesBilled:' "$datasources")" == "1" ]] \
+  && grep -Eq \
+    "^[[:space:]]+MaxBytesBilled:[[:space:]]+$maximum_bytes_billed[[:space:]]*$" \
+    "$datasources" || {
+  printf 'Grafana BigQuery must use the bounded %s-byte query cap.\n' \
+    "$maximum_bytes_billed" >&2
+  exit 1
+}
 if grep -En 'authenticationType: jwt|clientEmail:|privateKeyPath:' "$datasources"; then
   printf 'Grafana provisioning must use keyless GCP metadata authentication.\n' >&2
   exit 1
@@ -277,12 +295,15 @@ ORDER BY region
 SQL
 )"
 source_payload="$(
-  jq -cn --arg query "$source_query" '{
+  jq -cn \
+    --arg query "$source_query" \
+    --arg maximum_bytes_billed "$maximum_bytes_billed" \
+    '{
     query: $query,
     useLegacySql: false,
     location: "US",
     timeoutMs: 20000,
-    maximumBytesBilled: "52428800"
+    maximumBytesBilled: $maximum_bytes_billed
   }'
 )"
 if ! source_response="$(

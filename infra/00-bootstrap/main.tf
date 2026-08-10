@@ -10,6 +10,7 @@ locals {
     "compute.googleapis.com",
     "container.googleapis.com",
     "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "serviceusage.googleapis.com",
@@ -21,7 +22,16 @@ locals {
     "dns.googleapis.com",
   ])
 
-  required_services = setunion(local.core_services, local.tls_services)
+  binary_authorization_services = var.enable_binary_authorization ? toset([
+    "binaryauthorization.googleapis.com",
+    "containeranalysis.googleapis.com",
+  ]) : toset([])
+
+  required_services = setunion(
+    local.core_services,
+    local.tls_services,
+    local.binary_authorization_services,
+  )
 }
 
 resource "google_project_service" "required" {

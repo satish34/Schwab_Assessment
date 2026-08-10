@@ -42,6 +42,11 @@ variable "node_service_account_email" {
   type = string
 }
 
+variable "enable_binary_authorization" {
+  type    = bool
+  default = false
+}
+
 variable "labels" {
   type    = map(string)
   default = {}

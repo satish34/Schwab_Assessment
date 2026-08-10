@@ -102,3 +102,17 @@ resource "google_service_account_iam_member" "grafana_operator_impersonation" {
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = "user:satish.cse7@gmail.com"
 }
+
+resource "google_service_account" "app_a_caller" {
+  project = google_project.current.project_id
+
+  account_id   = "currency-app-a-caller"
+  display_name = "App A internal service caller"
+  description  = "Identity used only by the app-a-gateway Kubernetes service account."
+}
+
+resource "google_service_account_iam_member" "app_a_caller_workload_identity" {
+  service_account_id = google_service_account.app_a_caller.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${google_project.current.project_id}.svc.id.goog[risk-system/app-a-gateway]"
+}

@@ -60,6 +60,14 @@ spec:
                   key: SERVICE_VERSION
             - name: FAULT_CONFIG_PATH
               value: /etc/app-b-faults/faults.json
+            - name: APP_B_AUTH_MODE
+              value: google-id-token
+            - name: APP_B_TOKEN_AUDIENCE
+              value: https://app-b-engine.schwab-assessment.internal
+            - name: APP_A_IDENTITY_EMAIL
+              value: currency-app-a-caller@PROJECT_ID.iam.gserviceaccount.com
+            - name: GOOGLE_CLOUD_PROJECT
+              value: PROJECT_ID
           resources:
             requests:
               cpu: 250m

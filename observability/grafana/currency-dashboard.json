@@ -27,7 +27,7 @@
         "type": "grafana-bigquery-datasource",
         "uid": "currency-bigquery"
       },
-      "description": "App A /api/exchange-rates 5xx percentage from structured request logs.",
+      "description": "Public App A 5xx and rejected App B authentication percentages from structured request logs.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -92,11 +92,11 @@
           "format": 0,
           "location": "US",
           "rawQuery": true,
-          "rawSql": "WITH requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n)\nSELECT\n  time,\n  CONCAT(region, ' / ', cluster) AS cell,\n  100 * SAFE_DIVIDE(COUNTIF(status_code >= 500), COUNT(*)) AS error_rate_pct\nFROM requests\nGROUP BY time, region, cluster\nORDER BY time, cell;",
+          "rawSql": "WITH public_requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n),\ninternal_requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code,\n    jsonPayload.decision AS decision\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-b-engine'\n    AND jsonPayload.route = '/internal/exchange-rates'\n    AND jsonPayload.method = 'GET'\n),\nseries AS (\n  SELECT\n    time,\n    CONCAT(region, ' / ', cluster, ' / public 5xx') AS cell,\n    100 * SAFE_DIVIDE(COUNTIF(status_code >= 500), COUNT(*)) AS error_rate_pct\n  FROM public_requests\n  GROUP BY time, region, cluster\n  UNION ALL\n  SELECT\n    time,\n    CONCAT(region, ' / ', cluster, ' / auth rejected') AS cell,\n    100 * SAFE_DIVIDE(\n      COUNTIF(status_code = 401 AND decision = 'AUTH_REJECTED'),\n      COUNT(*)\n    ) AS error_rate_pct\n  FROM internal_requests\n  GROUP BY time, region, cluster\n)\nSELECT time, cell, error_rate_pct\nFROM series\nORDER BY time, cell;",
           "refId": "A"
         }
       ],
-      "title": "Application error rate by cell",
+      "title": "Application errors and auth rejections by cell",
       "type": "timeseries"
     },
     {

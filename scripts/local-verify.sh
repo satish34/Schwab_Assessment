@@ -92,6 +92,31 @@ done
 docker inspect "$app_b_id" | jq -e '.[0].NetworkSettings.Ports["8080/tcp"] == null' \
   >/dev/null || fail "App B unexpectedly has a published host port"
 
+auth_audience="https://app-b-engine.schwab-assessment.internal"
+security_csp="default-src 'none'; script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+docker inspect "$app_a_id" | jq -e \
+  --arg mode "APP_B_AUTH_MODE=disabled" \
+  --arg audience "APP_B_TOKEN_AUDIENCE=$auth_audience" \
+  --arg project "GOOGLE_CLOUD_PROJECT=$project_id" \
+  --arg profile "SPRING_PROFILES_ACTIVE=local" '
+    (.[0].Config.Env | index($mode)) != null and
+    (.[0].Config.Env | index($audience)) != null and
+    (.[0].Config.Env | index($project)) != null and
+    (.[0].Config.Env | index($profile)) != null
+  ' >/dev/null || fail "local App A must use the explicit no-metadata auth mode"
+docker inspect "$app_b_id" | jq -e \
+  --arg environment "ASPNETCORE_ENVIRONMENT=Development" \
+  --arg mode "APP_B_AUTH_MODE=disabled" \
+  --arg audience "APP_B_TOKEN_AUDIENCE=$auth_audience" \
+  --arg project "GOOGLE_CLOUD_PROJECT=$project_id" \
+  --arg caller "APP_A_IDENTITY_EMAIL=currency-app-a-caller@$project_id.iam.gserviceaccount.com" '
+    (.[0].Config.Env | index($environment)) != null and
+    (.[0].Config.Env | index($mode)) != null and
+    (.[0].Config.Env | index($audience)) != null and
+    (.[0].Config.Env | index($project)) != null and
+    (.[0].Config.Env | index($caller)) != null
+  ' >/dev/null || fail "local App B auth configuration is incomplete"
+
 binding="$(compose port app-a-gateway 8080 | tr -d '\r' | tail -n 1)"
 [[ "$binding" == 127.0.0.1:* ]] || fail "App A is not bound only to loopback"
 host_port="${binding##*:}"
@@ -208,6 +233,12 @@ ui_status="$(curl --silent --show-error --max-time 5 \
   || fail "App A UI did not return text/html"
 [[ "$(header_value "$ui_headers" cache-control)" == "no-store" ]] \
   || fail "App A UI did not return Cache-Control: no-store"
+[[ "$(header_value "$ui_headers" x-content-type-options)" == "nosniff" ]] \
+  && [[ "$(header_value "$ui_headers" x-frame-options)" == "DENY" ]] \
+  && [[ "$(header_value "$ui_headers" content-security-policy)" == "$security_csp" ]] \
+  || fail "App A UI security headers do not match the hardened contract"
+[[ "$(header_count "$ui_headers" strict-transport-security)" == "0" ]] \
+  || fail "loopback HTTP must not emit HSTS"
 for marker in \
   'id="exchange-rate-app"' \
   'data-api-endpoint="/api/exchange-rates"' \
@@ -246,6 +277,10 @@ for attempt in 1 2; do
     || fail "exchange-rate response $attempt did not return Cache-Control: no-store"
   [[ "$(header_count "$headers" cache-control)" == "1" ]] \
     || fail "exchange-rate response $attempt returned duplicate Cache-Control headers"
+  [[ "$(header_value "$headers" x-content-type-options)" == "nosniff" ]] \
+    && [[ "$(header_value "$headers" x-frame-options)" == "DENY" ]] \
+    && [[ "$(header_value "$headers" content-security-policy)" == "$security_csp" ]] \
+    || fail "exchange-rate response $attempt is missing hardened security headers"
 
   returned_correlation="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="x-correlation-id" {print $2}' | tail -n 1)"
   returned_traceparent="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="traceparent" {print $2}' | tail -n 1)"

@@ -440,16 +440,11 @@ wait_for_all_app_a_pods_state() {
   return 1
 }
 
-all_app_b_pods_return() {
+all_app_b_pods_ready() {
   local context="$1"
-  local expected_status="$2"
-  local region cluster
   local image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
-  local pods pod status
-  local response_file="$work_dir/direct-response.json"
-  local pod_names=()
+  local pods
 
-  IFS=$'\t' read -r region cluster < <(cell_identity "$context")
   pods="$(ready_pods_json "$context" app-b-engine)" || return 1
   jq -e --arg image "$image" '
     (.items | length) >= 2 and (.items | length) <= 6 and
@@ -461,46 +456,15 @@ all_app_b_pods_return() {
       ([.status.containerStatuses[]?.image] == [$image]) and
       all(.status.containerStatuses[]?; .ready == true))
   ' <<<"$pods" >/dev/null || return 1
-  mapfile -t pod_names < <(jq -r '.items[].metadata.name' <<<"$pods" | tr -d '\r' | sort)
-
-  for pod in "${pod_names[@]}"; do
-    start_port_forward "$context" "pod/$pod" || return 1
-    status="$(curl_local_status GET /internal/exchange-rates "$response_file")"
-    if [[ "$status" != "$expected_status" ]]; then
-      stop_port_forward
-      return 1
-    fi
-    if [[ "$expected_status" == "200" ]] \
-      && ! jq -e \
-        --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
-        --arg region "$region" --arg cluster "$cluster" --arg version "$git_sha" '
-          (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
-          (.rateSnapshots | length == 10) and
-          all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
-          (.providedBy | keys == ["cluster", "region", "service", "version"]) and
-          .baseCurrency == $expected[0].baseCurrency and
-          .rateSnapshots == $expected[0].rateSnapshots and
-          .disclaimer == $expected[0].disclaimer and
-          .providedBy.service == $expected[0].providedBy.service and
-          .providedBy.region == $region and
-          .providedBy.cluster == $cluster and
-          .providedBy.version == $version
-        ' "$response_file" >/dev/null 2>&1; then
-      stop_port_forward
-      return 1
-    fi
-    stop_port_forward
-  done
 }
 
-wait_for_all_app_b_pods_status() {
+wait_for_all_app_b_pods_ready() {
   local context="$1"
-  local expected_status="$2"
-  local timeout_seconds="$3"
+  local timeout_seconds="$2"
   local deadline=$((SECONDS + timeout_seconds))
 
   while ((SECONDS < deadline && SECONDS < global_deadline)); do
-    if all_app_b_pods_return "$context" "$expected_status"; then
+    if all_app_b_pods_ready "$context"; then
       return 0
     fi
     sleep 2
@@ -799,6 +763,83 @@ wait_for_valid_samples_after() {
   return 1
 }
 
+classify_failed_requests() {
+  local samples="$1"
+  local fault_started="$2"
+  local traffic_converged="$3"
+
+  jq -c \
+    --argjson fault_started "$fault_started" \
+    --argjson traffic_converged "$traffic_converged" '
+      {
+        transition_failed_requests: ([.[] | select(
+          .http_status != 200 and
+          .completed_ms >= $fault_started and
+          .started_ms < $traffic_converged
+        )] | length),
+        out_of_window_failed_requests: ([.[] | select(
+          .http_status != 200 and
+          (.completed_ms < $fault_started or
+           .started_ms >= $traffic_converged)
+        )] | length)
+      }
+    ' <<<"$samples"
+}
+
+test_failure_window_fixtures() {
+  local fixture="$repo_root/testdata/failover-failure-window-fixtures.json"
+  local fault_started traffic_converged case_count index
+  local case_name samples expected actual
+
+  [[ -f "$fixture" ]] || fail "failure-window fixture is missing: $fixture"
+  jq -e '
+    . as $root |
+    (.fault_started_ms < .backend_drained_ms) and
+    (.backend_drained_ms < .traffic_converged_ms) and
+    any(.cases[];
+      any(.samples[];
+        .http_status != 200 and
+        .started_ms >= $root.backend_drained_ms and
+        .started_ms < $root.traffic_converged_ms
+      )
+    ) and
+    any(.cases[];
+      any(.samples[];
+        .http_status != 200 and
+        .started_ms == $root.traffic_converged_ms
+      )
+    ) and
+    any(.cases[];
+      any(.samples[];
+        .http_status != 200 and
+        .started_ms > $root.traffic_converged_ms
+      )
+    ) and
+    any(.cases[];
+      any(.samples[];
+        .http_status != 200 and
+        .completed_ms < $root.fault_started_ms
+      )
+    )
+  ' "$fixture" >/dev/null \
+    || fail "failure-window fixture does not cover every boundary"
+
+  fault_started="$(jq -r '.fault_started_ms' "$fixture")"
+  traffic_converged="$(jq -r '.traffic_converged_ms' "$fixture")"
+  case_count="$(jq '.cases | length' "$fixture")"
+  for ((index = 0; index < case_count; index++)); do
+    case_name="$(jq -r --argjson index "$index" '.cases[$index].name' "$fixture")"
+    samples="$(jq -c --argjson index "$index" '.cases[$index].samples' "$fixture")"
+    expected="$(jq -c --argjson index "$index" '.cases[$index].expected' "$fixture")"
+    actual="$(
+      classify_failed_requests "$samples" "$fault_started" "$traffic_converged"
+    )"
+    jq -en --argjson actual "$actual" --argjson expected "$expected" \
+      '$actual == $expected' >/dev/null \
+      || fail "failure-window fixture failed: $case_name"
+  done
+}
+
 write_evidence() {
   local samples="$1"
   local baseline_backend="$2"
@@ -806,10 +847,12 @@ write_evidence() {
   local recovered_backend="$4"
   local csv_candidate="$work_dir/09-failover.csv"
   local summary_candidate="$work_dir/10-backend-health-after.txt"
-  local row request_count failed_requests transition_failed_requests
-  local out_of_window_failed_requests invalid_successes survivor_after_drain
+  local row request_count failed_requests failure_counts
+  local transition_failed_requests out_of_window_failed_requests
+  local invalid_successes survivor_after_drain
   local last_target_timestamp first_survivor_timestamp
-  local cache_drain_duration lb_drain_duration
+  local cache_drain_duration lb_drain_duration traffic_convergence_duration
+  local post_backend_drain_convergence_duration
   local cache_recovery_duration lb_recovery_duration
   local traffic_span_ms average_interval_ms observed_request_rate
   local row_files=()
@@ -820,20 +863,19 @@ write_evidence() {
     jq '[.[] | select(.http_status == 200 and .valid != true)] | length' \
       <<<"$samples"
   )"
+  ((fault_started_ms <= lb_drained_ms)) \
+    && ((lb_drained_ms <= traffic_converged_ms)) \
+    && ((traffic_converged_ms <= restore_started_ms)) \
+    || fail "the recorded failover boundaries are not chronological"
+  failure_counts="$(
+    classify_failed_requests \
+      "$samples" "$fault_started_ms" "$traffic_converged_ms"
+  )"
   transition_failed_requests="$(
-    jq --argjson start "$fault_started_ms" --argjson drained "$lb_drained_ms" '
-      [.[] | select(
-        .completed_ms >= $start and .started_ms < $drained and .http_status != 200
-      )] | length
-    ' <<<"$samples"
+    jq -r '.transition_failed_requests' <<<"$failure_counts"
   )"
   out_of_window_failed_requests="$(
-    jq --argjson start "$fault_started_ms" --argjson drained "$lb_drained_ms" '
-      [.[] | select(
-        .http_status != 200 and
-        (.completed_ms < $start or .started_ms >= $drained)
-      )] | length
-    ' <<<"$samples"
+    jq -r '.out_of_window_failed_requests' <<<"$failure_counts"
   )"
   survivor_after_drain="$(
     jq --argjson drained "$lb_drained_ms" \
@@ -866,10 +908,12 @@ write_evidence() {
   ((request_count > 0)) || fail "the failover traffic run produced no requests"
   ((invalid_successes == 0)) \
     || fail "the endpoint returned $invalid_successes malformed HTTP 200 responses"
-  ((failed_requests <= max_transition_failed_requests)) \
-    || fail "the endpoint recorded $failed_requests failures, exceeding the allowed $max_transition_failed_requests transition failures"
   ((out_of_window_failed_requests == 0)) \
-    || fail "$out_of_window_failed_requests failed requests occurred outside the bounded drain window"
+    || fail "$out_of_window_failed_requests failed requests occurred before fault injection or at/after public traffic convergence"
+  ((transition_failed_requests <= max_transition_failed_requests)) \
+    || fail "the endpoint recorded $transition_failed_requests transition failures, exceeding the allowed $max_transition_failed_requests"
+  ((failed_requests == transition_failed_requests + out_of_window_failed_requests)) \
+    || fail "the failure-window accounting did not classify every failed request"
   ((survivor_after_drain >= survivor_sample_count)) \
     || fail "the CSV does not retain enough surviving-cell responses after drain"
   jq -e '
@@ -921,6 +965,10 @@ write_evidence() {
 
   cache_drain_duration="$((cache_unhealthy_ms - fault_started_ms))"
   lb_drain_duration="$((lb_drained_ms - fault_started_ms))"
+  traffic_convergence_duration="$((traffic_converged_ms - fault_started_ms))"
+  post_backend_drain_convergence_duration="$((
+    traffic_converged_ms - lb_drained_ms
+  ))"
   cache_recovery_duration="$((cache_recovered_ms - restore_started_ms))"
   lb_recovery_duration="$((lb_recovered_ms - restore_started_ms))"
 
@@ -937,12 +985,16 @@ write_evidence() {
     printf 'maximum_allowed_transition_failures=%s\n' \
       "$max_transition_failed_requests"
     printf 'transition_failed_requests=%s\n' "$transition_failed_requests"
-    printf 'failed_requests_outside_drain_window=%s\n' \
+    printf 'failed_requests_outside_transition_window=%s\n' \
       "$out_of_window_failed_requests"
     printf 'cache_drain_seconds=%s\n' \
       "$(milliseconds_as_seconds "$cache_drain_duration")"
     printf 'load_balancer_drain_seconds=%s\n' \
       "$(milliseconds_as_seconds "$lb_drain_duration")"
+    printf 'public_traffic_convergence_seconds=%s\n' \
+      "$(milliseconds_as_seconds "$traffic_convergence_duration")"
+    printf 'post_backend_drain_convergence_seconds=%s\n' \
+      "$(milliseconds_as_seconds "$post_backend_drain_convergence_duration")"
     printf 'cache_recovery_seconds=%s\n' \
       "$(milliseconds_as_seconds "$cache_recovery_duration")"
     printf 'load_balancer_recovery_seconds=%s\n' \
@@ -969,8 +1021,14 @@ main() {
   local baseline_backend drained_backend recovered_backend
   local traffic_max_seconds
 
+  if [[ $# -eq 1 && "$1" == "--test-failure-window" ]]; then
+    command -v jq >/dev/null 2>&1 || fail "jq is required"
+    test_failure_window_fixtures
+    printf 'Failover failure-window fixtures: PASS\n'
+    return 0
+  fi
   if [[ $# -ne 1 ]]; then
-    printf 'Usage: %s FULL_GIT_SHA\n' "$0" >&2
+    printf 'Usage: %s FULL_GIT_SHA | --test-failure-window\n' "$0" >&2
     exit 2
   fi
 
@@ -1034,12 +1092,14 @@ main() {
   done
   for required_file in \
     "$repo_root/testdata/expected-exchange-rates.json" \
+    "$repo_root/testdata/failover-failure-window-fixtures.json" \
     "$repo_root/k8s/faults/healthy.yaml" \
     "$repo_root/k8s/faults/unavailable.yaml"; do
     [[ -f "$required_file" ]] || fail "required file is missing: $required_file"
   done
   git cat-file -e "$git_sha^{commit}" 2>/dev/null \
     || fail "Git SHA $git_sha is not a commit in this repository"
+  test_failure_window_fixtures
 
   active_account="$(
     gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null
@@ -1093,10 +1153,10 @@ main() {
     || fail "us-central1 baseline resources are not healthy and immutable"
   validate_cell_resources gke-risk-use4 \
     || fail "us-east4 baseline resources are not healthy and immutable"
-  wait_for_all_app_b_pods_status gke-risk-usc1 200 120 \
-    || fail "us-central1 App B baseline exchange-rate path is not healthy"
-  wait_for_all_app_b_pods_status gke-risk-use4 200 120 \
-    || fail "us-east4 App B baseline exchange-rate path is not healthy"
+  wait_for_all_app_b_pods_ready gke-risk-usc1 120 \
+    || fail "us-central1 App B baseline Pods are not ready"
+  wait_for_all_app_b_pods_ready gke-risk-use4 120 \
+    || fail "us-east4 App B baseline Pods are not ready"
   wait_for_all_app_a_pods_state gke-risk-usc1 200 HEALTHY 120 \
     || fail "us-central1 App A Pods do not all report cached cell health"
   wait_for_all_app_a_pods_state gke-risk-use4 200 HEALTHY 120 \
@@ -1158,15 +1218,17 @@ main() {
   fault_started_ms="$(now_epoch_ms)"
   apply_fault_profile "$fault_target_context" unavailable 1.0 \
     || fail "$fault_target_context did not accept the unavailable profile"
-  wait_for_all_app_b_pods_status "$fault_target_context" 503 \
+  wait_for_all_app_b_pods_ready "$fault_target_context" \
     "$fault_activation_timeout_seconds" \
-    || fail "not every target App B Pod loaded the unavailable profile"
+    || fail "target App B Pods did not remain ready during the injected fault"
   wait_for_all_app_a_pods_state "$fault_target_context" 503 UNHEALTHY \
     "$cache_timeout_seconds" \
     || fail "target App A readiness stayed up, but cached cell health did not drain in time"
   cache_unhealthy_ms="$(now_epoch_ms)"
   wait_for_backend_state target-drained "$backend_timeout_seconds" \
     || fail "the load balancer did not remove all target-region endpoints"
+  # This is the backend health/control-plane boundary, not proof that public
+  # traffic has already converged on the surviving cell.
   lb_drained_ms="$(now_epoch_ms)"
   drained_backend="$backend_summary"
 
@@ -1174,13 +1236,14 @@ main() {
     || fail "the surviving cell did not remain independently healthy"
   wait_for_survivor_samples_after "$lb_drained_ms" "$survivor_sample_count" 120 \
     || fail "global traffic did not prove the surviving region after target drain"
+  traffic_converged_ms="$(now_epoch_ms)"
 
   restore_started_ms="$(now_epoch_ms)"
   apply_fault_profile "$fault_target_context" healthy 0.0 \
     || fail "$fault_target_context did not accept the healthy profile"
-  wait_for_all_app_b_pods_status "$fault_target_context" 200 \
+  wait_for_all_app_b_pods_ready "$fault_target_context" \
     "$recovery_timeout_seconds" \
-    || fail "not every target App B Pod reloaded the healthy profile"
+    || fail "target App B Pods were not ready during recovery"
   wait_for_all_app_a_pods_state "$fault_target_context" 200 HEALTHY \
     "$recovery_timeout_seconds" \
     || fail "target App A cached cell health did not recover"
@@ -1196,10 +1259,10 @@ main() {
     || fail "us-central1 failed the post-fault immutable workload check"
   validate_cell_resources gke-risk-use4 \
     || fail "us-east4 failed the post-fault immutable workload check"
-  wait_for_all_app_b_pods_status gke-risk-usc1 200 120 \
-    || fail "us-central1 App B failed the post-fault exchange-rate check"
-  wait_for_all_app_b_pods_status gke-risk-use4 200 120 \
-    || fail "us-east4 App B failed the post-fault exchange-rate check"
+  wait_for_all_app_b_pods_ready gke-risk-usc1 120 \
+    || fail "us-central1 App B failed the post-fault readiness check"
+  wait_for_all_app_b_pods_ready gke-risk-use4 120 \
+    || fail "us-east4 App B failed the post-fault readiness check"
   wait_for_all_app_a_pods_state gke-risk-usc1 200 HEALTHY 120 \
     || fail "us-central1 failed the post-fault cached cell-health check"
   wait_for_all_app_a_pods_state gke-risk-use4 200 HEALTHY 120 \

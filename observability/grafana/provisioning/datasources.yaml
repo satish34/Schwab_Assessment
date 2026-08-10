@@ -10,7 +10,7 @@ datasources:
       authenticationType: gce
       defaultProject: schwab-assessment-gke
       processingLocation: US
-      MaxBytesBilled: 52428800
+      MaxBytesBilled: 104857600
 
   - name: Currency Cloud Monitoring
     uid: currency-cloud-monitoring

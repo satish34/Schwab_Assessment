@@ -32,6 +32,18 @@ node_usc1="risk-gke-usc1-nodes@$PROJECT_ID.iam.gserviceaccount.com"
 node_use4="risk-gke-use4-nodes@$PROJECT_ID.iam.gserviceaccount.com"
 build_sa="risk-cloud-build@$PROJECT_ID.iam.gserviceaccount.com"
 grafana_sa="grafana-reader@$PROJECT_ID.iam.gserviceaccount.com"
+app_a_caller_sa="currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com"
+
+iamcredentials_enabled="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" --project="$PROJECT_ID" \
+    services list --enabled \
+    --filter='config.name=iamcredentials.googleapis.com' \
+    --format='value(config.name)'
+)"
+[[ "$iamcredentials_enabled" == "iamcredentials.googleapis.com" ]] || {
+  printf 'IAM Service Account Credentials API is not enabled by Terraform.\n' >&2
+  exit 1
+}
 
 outputs_json="$(terraform -chdir=infra/10-global output -json)"
 jq -e \
@@ -40,6 +52,7 @@ jq -e \
   --arg node_use4 "$node_use4" \
   --arg build "$build_sa" \
   --arg grafana "$grafana_sa" \
+  --arg app_a_caller "$app_a_caller_sa" \
   '
     (.project_id.value == $project)
     and (.project_number.value | test("^[0-9]+$"))
@@ -63,6 +76,7 @@ jq -e \
       "us-east4": $node_use4
     })
     and (.build_service_account_email.value == $build)
+    and (.app_a_caller_service_account_email.value == $app_a_caller)
     and (.build_source_bucket.value == ($project + "_cloudbuild"))
     and (.grafana_reader_email.value == $grafana)
   ' <<<"$outputs_json" >/dev/null || {
@@ -207,6 +221,7 @@ jq -e \
   --arg node_use4 "serviceAccount:$node_use4" \
   --arg build "serviceAccount:$build_sa" \
   --arg grafana "serviceAccount:$grafana_sa" \
+  --arg app_a_caller "serviceAccount:$app_a_caller_sa" \
   --arg grafana_metadata "projects/$PROJECT_ID/roles/grafanaProjectReader" \
   '
     def roles_for($member):
@@ -216,8 +231,9 @@ jq -e \
     and (roles_for($node_use4) == ["roles/container.defaultNodeServiceAccount"])
     and (roles_for($build) == ["roles/logging.logWriter"])
     and (roles_for($grafana) == ([$grafana_metadata, "roles/bigquery.jobUser", "roles/monitoring.viewer"] | sort))
+    and (roles_for($app_a_caller) == [])
   ' <<<"$project_policy" >/dev/null || {
-    printf 'Default, node, or build project IAM does not match the least-privilege contract.\n' >&2
+    printf 'Default, node, build, dashboard, or caller project IAM does not match the least-privilege contract.\n' >&2
     exit 1
   }
 
@@ -363,6 +379,25 @@ jq -e --arg operator "user:$expected_account" '
   exit 1
 }
 
+app_a_caller_policy="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" \
+    iam service-accounts get-iam-policy "$app_a_caller_sa" \
+    --project="$PROJECT_ID" \
+    --format=json
+)"
+jq -e \
+  --arg ksa "serviceAccount:$PROJECT_ID.svc.id.goog[risk-system/app-a-gateway]" '
+  ([
+    .bindings[]?
+    | select(.role == "roles/iam.workloadIdentityUser")
+    | .members[]?
+  ] | sort) == [$ksa]
+  and ([.bindings[]? | select(.role != "roles/iam.workloadIdentityUser")] | length == 0)
+' <<<"$app_a_caller_policy" >/dev/null || {
+  printf 'App A caller impersonation is not restricted to its exact Kubernetes service account.\n' >&2
+  exit 1
+}
+
 jq -e --arg writer "$sink_writer" '
   [
     .bindings[]
@@ -389,7 +424,7 @@ verify_no_user_keys() {
   [[ -z "$keys" ]]
 }
 
-for account in "$node_usc1" "$node_use4" "$build_sa" "$grafana_sa"; do
+for account in "$node_usc1" "$node_use4" "$build_sa" "$grafana_sa" "$app_a_caller_sa"; do
   verify_no_user_keys "$account" || {
     printf 'User-managed key found on %s.\n' "$account" >&2
     exit 1

@@ -67,6 +67,18 @@ output "build_service_account_email" {
   value = google_service_account.build.email
 }
 
+output "app_a_caller_service_account_email" {
+  value = google_service_account.app_a_caller.email
+}
+
+output "binary_authorization_enabled" {
+  value = var.enable_binary_authorization
+}
+
+output "binary_authorization_policy_id" {
+  value = var.enable_binary_authorization ? google_binary_authorization_policy.assessment[0].id : null
+}
+
 output "build_source_bucket" {
   value = google_storage_bucket.build_source.name
 }

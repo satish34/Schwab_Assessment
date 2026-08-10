@@ -14,6 +14,8 @@ BILLING_ACCOUNT_ID ?=
 ADMIN_CIDR ?=
 GCLOUD_CONFIGURATION ?= schwab-assessment
 DOMAIN_NAME ?=
+ENABLE_CLOUD_ARMOR ?= 0
+ENABLE_BINARY_AUTHORIZATION ?= 0
 PRIMARY_REGION ?= us-central1
 SECONDARY_REGION ?= us-east4
 MAVEN_IMAGE ?= maven:3.9.11-eclipse-temurin-21
@@ -21,11 +23,13 @@ GCLOUD_IMAGE ?= gcr.io/google.com/cloudsdktool/google-cloud-cli:525.0.0-slim
 IMAGE_TAG ?= $(shell git rev-parse --verify HEAD^{commit} 2>/dev/null)
 
 export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION DOMAIN_NAME
+export ENABLE_CLOUD_ARMOR ENABLE_BINARY_AUTHORIZATION
 export PRIMARY_REGION SECONDARY_REGION MAVEN_IMAGE GCLOUD_IMAGE
 
 .PHONY: help preflight fmt test local-up local-verify bootstrap global clusters
-.PHONY: build deploy-apps wait-negs lb-plan lb verify seed-traffic verify-bigquery verify-grafana
-.PHONY: verify-error-reporting test-failover capture-evidence plan-check secret-scan destroy orphan-check
+.PHONY: build deploy-apps wait-negs lb-plan lb verify verify-armor test-armor seed-traffic verify-bigquery verify-grafana
+.PHONY: verify-error-reporting verify-binauthz test-binauthz-denial test-failover
+.PHONY: capture-evidence plan-check secret-scan destroy orphan-check
 
 help:
 	@printf '%s\n' \
@@ -43,10 +47,14 @@ help:
 	  'lb-plan            preview the global edge change after the NEG gate' \
 	  'lb                 apply infra/30-lb after the NEG gate' \
 	  'verify             verify clusters, backends, and public API' \
+	  'verify-armor       verify the opt-in attached Cloud Armor policy' \
+	  'test-armor         generate bounded opt-in WAF/rate-limit evidence' \
 	  'seed-traffic       generate controlled application traffic' \
 	  'verify-bigquery    run checked-in BigQuery queries' \
 	  'verify-grafana     verify source data and all four live Grafana panels' \
 	  'verify-error-reporting verify grouped App A and App B exceptions' \
+	  'verify-binauthz     verify the opt-in Binary Authorization contract' \
+	  'test-binauthz-denial prove opt-in Docker Hub denial without persisting a Pod' \
 	  'test-failover      run and restore the cell-failover experiment' \
 	  'capture-evidence   save non-secret gate evidence' \
 	  'plan-check         run final Terraform drift checks' \
@@ -122,6 +130,12 @@ verify:
 	@bash ./scripts/wait-negs.sh "$(IMAGE_TAG)"
 	@bash ./scripts/verify-lb.sh
 
+verify-armor:
+	@bash ./scripts/test-cloud-armor.sh verify
+
+test-armor:
+	@bash ./scripts/test-cloud-armor.sh exercise
+
 seed-traffic:
 	@bash ./scripts/generate-traffic.sh "$(IMAGE_TAG)"
 
@@ -133,6 +147,12 @@ verify-grafana:
 
 verify-error-reporting:
 	@bash ./scripts/verify-error-reporting.sh
+
+verify-binauthz:
+	@bash ./scripts/verify-binary-authorization.sh
+
+test-binauthz-denial:
+	@bash ./scripts/test-binary-authorization-denial.sh
 
 test-failover:
 	@bash ./scripts/test-failover.sh "$(IMAGE_TAG)"

@@ -15,6 +15,16 @@ terraform_timeout="${TERRAFORM_TIMEOUT:-50m}"
 : "${BILLING_ACCOUNT_ID:?BILLING_ACCOUNT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
+enable_cloud_armor="${ENABLE_CLOUD_ARMOR:-0}"
+enable_binary_authorization="${ENABLE_BINARY_AUTHORIZATION:-0}"
+for feature_flag in enable_cloud_armor enable_binary_authorization; do
+  feature_value="${!feature_flag}"
+  [[ "$feature_value" == "0" || "$feature_value" == "1" ]] || {
+    printf '%s must be 0 or 1.\n' "${feature_flag^^}" >&2
+    exit 2
+  }
+done
+
 case "$action" in
   plan|apply|destroy) ;;
   *)
@@ -76,8 +86,14 @@ TF_VAR_billing_account_id="$BILLING_ACCOUNT_ID"
 TF_VAR_gcloud_configuration="$GCLOUD_CONFIGURATION"
 TF_VAR_domain_name="${DOMAIN_NAME:-}"
 TF_VAR_admin_cidr="${ADMIN_CIDR:-}"
-export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr
-trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr' EXIT
+TF_VAR_enable_cloud_armor=false
+TF_VAR_enable_binary_authorization=false
+[[ "$enable_cloud_armor" == "1" ]] && TF_VAR_enable_cloud_armor=true
+[[ "$enable_binary_authorization" == "1" ]] && TF_VAR_enable_binary_authorization=true
+export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration
+export TF_VAR_domain_name TF_VAR_admin_cidr
+export TF_VAR_enable_cloud_armor TF_VAR_enable_binary_authorization
+trap 'rm -f -- infra/20-cluster/.terraform/binary-authorization-apply-gate.tfplan; unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr TF_VAR_enable_cloud_armor TF_VAR_enable_binary_authorization' EXIT
 
 run_terraform() {
   timeout --foreground --signal=INT --kill-after=15s \
@@ -101,7 +117,33 @@ if [[ "${TF_AUTO_APPROVE:-0}" == "1" ]]; then
   approve_args=(-auto-approve)
 fi
 
-run_terraform -chdir="$stack_dir" "$action" -input=false "${approve_args[@]}"
+if [[ "$action" == "apply" \
+  && "$stack_dir" == "infra/20-cluster" \
+  && "$enable_binary_authorization" == "1" ]]; then
+  [[ "${TF_AUTO_APPROVE:-0}" == "1" ]] || {
+    printf 'Binary Authorization apply requires TF_AUTO_APPROVE=1 after reviewing the in-place plan.\n' >&2
+    exit 2
+  }
+  gated_plan=".terraform/binary-authorization-apply-gate.tfplan"
+  rm -f -- "$stack_dir/$gated_plan"
+  run_terraform -chdir="$stack_dir" plan -input=false -out="$gated_plan"
+  gated_plan_json="$(run_terraform -chdir="$stack_dir" show -json "$gated_plan")"
+  jq -e '
+    all(.resource_changes[]?;
+      ((.change.actions | index("delete")) == null)
+    ) and
+    all(.resource_changes[]? | select(.type == "google_container_cluster");
+      (.change.actions == ["update"]) or (.change.actions == ["no-op"])
+    )
+  ' <<<"$gated_plan_json" >/dev/null || {
+    printf 'Binary Authorization apply refused: the saved plan replaces or destroys a cluster/resource.\n' >&2
+    exit 1
+  }
+  printf 'Verified Binary Authorization changes contain no replacement or destroy action.\n'
+  run_terraform -chdir="$stack_dir" apply -input=false "$gated_plan"
+else
+  run_terraform -chdir="$stack_dir" "$action" -input=false "${approve_args[@]}"
+fi
 
 if [[ "$action" == "apply" && "$stack_dir" == "infra/00-bootstrap" ]]; then
   project_number="$(

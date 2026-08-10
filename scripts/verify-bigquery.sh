@@ -19,7 +19,7 @@ query_timeout_seconds="${BQ_QUERY_TIMEOUT_SECONDS:-180}"
 maximum_bytes_billed="${BQ_MAXIMUM_BYTES_BILLED:-1000000000}"
 seed_max_age_seconds="${BQ_SEED_MAX_AGE_SECONDS:-3600}"
 work_dir=""
-sql_files=("$repo_root"/observability/bigquery/0[1-4]_*.sql)
+sql_files=("$repo_root"/observability/bigquery/0[1-5]_*.sql)
 
 fail() {
   printf 'verify-bigquery: %s\n' "$*" >&2
@@ -90,8 +90,8 @@ for command_name in docker gcloud git jq sed terraform timeout; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "$command_name is required"
 done
-[[ "${#sql_files[@]}" == "4" ]] \
-  || fail "exactly four checked-in BigQuery queries are required"
+[[ "${#sql_files[@]}" == "5" ]] \
+  || fail "exactly five checked-in BigQuery queries are required"
 for sql_file in "${sql_files[@]}"; do
   [[ -f "$sql_file" ]] || fail "a checked-in BigQuery query is missing"
 done
@@ -459,15 +459,30 @@ for sql_file in "${sql_files[@]}"; do
       ' "$query_result" >/dev/null \
         || fail "$query_name lacks a region, service, or exchange-rate result group"
       ;;
+    5)
+      jq -e --arg version "$git_sha" '
+        [.[] | select(.service_version == $version)] as $current_rows |
+        ($current_rows | length) >= 2 and
+        ([$current_rows[].region] | unique | sort) == ["us-central1", "us-east4"] and
+        all($current_rows[];
+          .service == "app-b-engine" and
+          .decision == "AUTH_REJECTED" and
+          (.rejection_type | type == "string" and length > 0) and
+          (.rejection_count | tonumber) > 0 and
+          ((.region == "us-central1" and .cluster == "gke-risk-usc1") or
+           (.region == "us-east4" and .cluster == "gke-risk-use4")))
+      ' "$query_result" >/dev/null \
+        || fail "$query_name did not prove current-release authentication denials in both cells"
+      ;;
   esac
 done
 
 for output_file in \
   "$table_list_file" "$table_metadata" "$scope_result" \
-  "$work_dir"/0[1-4]_*.json; do
+  "$work_dir"/0[1-5]_*.json; do
   cp -- "$output_file" "$results_dir/$(basename "$output_file")"
 done
 cp -- "$manifest" "$results_dir/bigquery-seed.json"
 
-printf 'Verified current SHA %s in partitioned BigQuery rows: both regions, both services, exchange-rate results, controlled errors, latency, trace joins, and zero export errors.\n' \
+printf 'Verified current SHA %s in partitioned BigQuery rows: both regions, both services, exchange-rate results, controlled errors, authentication denials, latency, trace joins, and zero export errors.\n' \
   "$git_sha"

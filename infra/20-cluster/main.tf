@@ -45,6 +45,17 @@ resource "terraform_data" "global_contract" {
       ])
       error_message = "10-global node service accounts do not match the frozen regional identities."
     }
+
+    precondition {
+      condition = (
+        try(
+          data.terraform_remote_state.global.outputs.binary_authorization_enabled,
+          false,
+        ) ==
+        var.enable_binary_authorization
+      )
+      error_message = "20-cluster Binary Authorization must match the 10-global policy flag."
+    }
   }
 }
 
@@ -52,18 +63,19 @@ module "autopilot_cluster" {
   for_each = local.cells
   source   = "./modules/autopilot-cluster"
 
-  project_id                 = var.project_id
-  name                       = each.value.cluster_name
-  region                     = each.key
-  node_locations             = each.value.node_locations
-  network_self_link          = data.terraform_remote_state.global.outputs.network_self_link
-  subnetwork_self_link       = data.terraform_remote_state.global.outputs.subnetwork_self_links[each.key]
-  pod_range_name             = each.value.pod_range_name
-  service_range_name         = each.value.service_range_name
-  master_cidr                = each.value.master_cidr
-  admin_cidr                 = trimspace(var.admin_cidr)
-  node_service_account_email = data.terraform_remote_state.global.outputs.node_service_account_emails[each.key]
-  labels                     = merge(local.labels, { region = each.key })
+  project_id                  = var.project_id
+  name                        = each.value.cluster_name
+  region                      = each.key
+  node_locations              = each.value.node_locations
+  network_self_link           = data.terraform_remote_state.global.outputs.network_self_link
+  subnetwork_self_link        = data.terraform_remote_state.global.outputs.subnetwork_self_links[each.key]
+  pod_range_name              = each.value.pod_range_name
+  service_range_name          = each.value.service_range_name
+  master_cidr                 = each.value.master_cidr
+  admin_cidr                  = trimspace(var.admin_cidr)
+  node_service_account_email  = data.terraform_remote_state.global.outputs.node_service_account_emails[each.key]
+  enable_binary_authorization = var.enable_binary_authorization
+  labels                      = merge(local.labels, { region = each.key })
 
   depends_on = [terraform_data.global_contract]
 }

@@ -22,3 +22,9 @@ variable "admin_cidr" {
     error_message = "admin_cidr must be one specific public IPv4 address in /32 notation; 0.0.0.0/32 is not allowed."
   }
 }
+
+variable "enable_binary_authorization" {
+  description = "Enable project-policy Binary Authorization enforcement on both clusters."
+  type        = bool
+  default     = false
+}

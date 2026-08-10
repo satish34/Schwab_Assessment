@@ -30,3 +30,9 @@ variable "domain_name" {
     error_message = "domain_name must be empty or a DNS name without a scheme or path."
   }
 }
+
+variable "enable_binary_authorization" {
+  description = "Create and enforce the opt-in Binary Authorization project policy."
+  type        = bool
+  default     = false
+}

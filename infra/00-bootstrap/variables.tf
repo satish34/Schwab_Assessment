@@ -26,6 +26,12 @@ variable "domain_name" {
   }
 }
 
+variable "enable_binary_authorization" {
+  description = "Enable the paid Binary Authorization APIs for the opt-in hardening demonstration."
+  type        = bool
+  default     = false
+}
+
 variable "budget_amount_usd" {
   description = "Monthly project safety budget in USD."
   type        = number

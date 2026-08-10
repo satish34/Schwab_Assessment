@@ -23,6 +23,14 @@ fail() {
 : "${ADMIN_CIDR:?ADMIN_CIDR is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
+enable_cloud_armor="${ENABLE_CLOUD_ARMOR:-0}"
+enable_binary_authorization="${ENABLE_BINARY_AUTHORIZATION:-0}"
+for feature_flag in enable_cloud_armor enable_binary_authorization; do
+  feature_value="${!feature_flag}"
+  [[ "$feature_value" == "0" || "$feature_value" == "1" ]] \
+    || fail "${feature_flag^^} must be 0 or 1"
+done
+
 [[ "$PROJECT_ID" == "$expected_project" ]] \
   || fail "expected project $expected_project"
 [[ "$GCLOUD_CONFIGURATION" == "$expected_configuration" ]] \
@@ -70,7 +78,11 @@ export TF_VAR_billing_account_id="$BILLING_ACCOUNT_ID"
 export TF_VAR_gcloud_configuration="$GCLOUD_CONFIGURATION"
 export TF_VAR_admin_cidr="$ADMIN_CIDR"
 export TF_VAR_domain_name="${DOMAIN_NAME:-}"
-trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_admin_cidr TF_VAR_domain_name' EXIT
+export TF_VAR_enable_cloud_armor=false
+export TF_VAR_enable_binary_authorization=false
+[[ "$enable_cloud_armor" == "1" ]] && export TF_VAR_enable_cloud_armor=true
+[[ "$enable_binary_authorization" == "1" ]] && export TF_VAR_enable_binary_authorization=true
+trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_admin_cidr TF_VAR_domain_name TF_VAR_enable_cloud_armor TF_VAR_enable_binary_authorization' EXIT
 
 mkdir -p "$runtime_dir" "$repo_root/evidence"
 git check-ignore --quiet -- "$runtime_dir" \

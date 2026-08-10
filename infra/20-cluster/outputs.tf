@@ -25,3 +25,7 @@ output "node_service_account_emails" {
     for region, cluster in module.autopilot_cluster : region => cluster.node_service_account_email
   }
 }
+
+output "binary_authorization_enabled" {
+  value = var.enable_binary_authorization
+}

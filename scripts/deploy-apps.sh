@@ -154,6 +154,8 @@ render_overlay() {
   local rendered="$work_dir/$region.yaml"
   local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$git_sha"
   local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
+  local auth_audience="https://app-b-engine.schwab-assessment.internal"
+  local caller_email="currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com"
 
   kubectl kustomize "$overlay" \
     | sed -e "s/PROJECT_ID/$PROJECT_ID/g" -e "s/GIT_SHA/$git_sha/g" \
@@ -168,6 +170,19 @@ render_overlay() {
     || fail "$region render does not contain exactly three expected App A images"
   [[ "$(grep -Fc -- "image: $app_b_image" "$rendered")" == "1" ]] \
     || fail "$region render does not contain exactly one expected App B image"
+  [[ "$(grep -Fc -- 'name: APP_B_AUTH_MODE' "$rendered")" == "4" ]] \
+    && [[ "$(grep -Fc -- 'value: google-id-token' "$rendered")" == "4" ]] \
+    && [[ "$(grep -Fc -- 'name: APP_B_TOKEN_AUDIENCE' "$rendered")" == "4" ]] \
+    && [[ "$(grep -Fc -- "value: $auth_audience" "$rendered")" == "4" ]] \
+    || fail "$region render does not require Google ID-token authentication for both apps"
+  [[ "$(grep -Fc -- 'name: GOOGLE_CLOUD_PROJECT' "$rendered")" == "4" ]] \
+    && [[ "$(grep -Fc -- "value: $PROJECT_ID" "$rendered")" == "4" ]] \
+    || fail "$region render does not bind both apps to the deployment project"
+  [[ "$(grep -Fc -- "iam.gke.io/gcp-service-account: $caller_email" "$rendered")" == "1" ]] \
+    && [[ "$(grep -Fc -- "value: $caller_email" "$rendered")" == "1" ]] \
+    || fail "$region render does not bind and verify the exact App A caller identity"
+  ! grep -Fq -- 'value: disabled' "$rendered" \
+    || fail "$region deployed render must never disable App B authentication"
 }
 
 prepare_kubeconfig

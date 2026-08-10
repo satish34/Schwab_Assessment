@@ -34,7 +34,17 @@ resource "google_compute_backend_service" "app_a" {
   timeout_sec                     = 10
   connection_draining_timeout_sec = 30
   health_checks                   = [google_compute_health_check.app_a_cell.id]
+  security_policy                 = var.enable_cloud_armor ? google_compute_security_policy.currency_edge[0].id : null
   deletion_policy                 = "DELETE"
+
+  dynamic "log_config" {
+    for_each = var.enable_cloud_armor ? [true] : []
+
+    content {
+      enable      = true
+      sample_rate = 1.0
+    }
+  }
 
   dynamic "backend" {
     for_each = data.google_compute_network_endpoint_group.app_a

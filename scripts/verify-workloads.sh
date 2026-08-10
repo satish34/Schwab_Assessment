@@ -9,6 +9,7 @@ bash "$repo_root/scripts/ensure-gke-auth-plugin.sh"
 expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
 expected_account="satish.cse7@gmail.com"
+auth_audience="https://app-b-engine.schwab-assessment.internal"
 namespace="risk-system"
 runtime_dir="$repo_root/.tmp"
 kubeconfig="$runtime_dir/kubeconfig-schwab-assessment"
@@ -206,8 +207,14 @@ workload_ready() {
 
   jq -e \
     --arg image "$image" \
+    --arg auth_audience "$auth_audience" \
+    --arg caller_email "currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com" \
+    --arg project_id "$PROJECT_ID" \
     --argjson min "$min_replicas" \
     --argjson max "$max_replicas" '
+    def literal_env($name; $value):
+      [.spec.template.spec.containers[0].env[]?
+        | select(.name == $name and .value == $value)] | length == 1;
     (.spec.replicas // 0) as $replicas |
     (.metadata.generation <= (.status.observedGeneration // 0)) and
     ($replicas >= $min and $replicas <= $max) and
@@ -216,7 +223,13 @@ workload_ready() {
     (.status.readyReplicas == $replicas) and
     (.status.availableReplicas == $replicas) and
     ((.status.unavailableReplicas // 0) == 0) and
-    ([.spec.template.spec.containers[].image] == [$image])
+    ([.spec.template.spec.containers[].image] == [$image]) and
+    (.spec.template.spec.serviceAccountName == "app-b-engine") and
+    (.spec.template.spec.automountServiceAccountToken == false) and
+    literal_env("APP_B_AUTH_MODE"; "google-id-token") and
+    literal_env("APP_B_TOKEN_AUDIENCE"; $auth_audience) and
+    literal_env("APP_A_IDENTITY_EMAIL"; $caller_email) and
+    literal_env("GOOGLE_CLOUD_PROJECT"; $project_id)
   ' <<<"$deployment_json" >/dev/null || return 1
 
   replicas="$(jq -r '.spec.replicas' <<<"$deployment_json" | tr -d '\r')"
@@ -287,10 +300,15 @@ app_a_shards_ready() {
 
   jq -e \
     --arg image "$image" \
+    --arg auth_audience "$auth_audience" \
+    --arg project_id "$PROJECT_ID" \
     --arg zone_a "$zone_a" \
     --arg zone_b "$zone_b" \
     --arg zone_c "$zone_c" \
     '
+      def literal_env($name; $value):
+        [.spec.template.spec.containers[0].env[]?
+          | select(.name == $name and .value == $value)] | length == 1;
       def expected_shard($name):
         if $name == "app-a-gateway-a" then "a"
         elif $name == "app-a-gateway-b" then "b"
@@ -325,6 +343,11 @@ app_a_shards_ready() {
         (.status.readyReplicas == $replicas) and
         (.status.availableReplicas == $replicas) and
         ((.status.unavailableReplicas // 0) == 0) and
+        (.spec.template.spec.serviceAccountName == "app-a-gateway") and
+        (.spec.template.spec.automountServiceAccountToken == false) and
+        literal_env("APP_B_AUTH_MODE"; "google-id-token") and
+        literal_env("APP_B_TOKEN_AUDIENCE"; $auth_audience) and
+        literal_env("GOOGLE_CLOUD_PROJECT"; $project_id) and
         (.spec.template.spec.nodeSelector["topology.kubernetes.io/zone"]
           == expected_zone($shard)) and
         ([.spec.template.spec.containers[].image] == [$image])
@@ -509,9 +532,94 @@ verify_services() {
     || fail "$context App B Service is exposed or carries an unexpected NEG annotation"
 }
 
+verify_service_accounts() {
+  local context="$1"
+  local caller_email="currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com"
+  local app_a_json
+  local app_b_json
+
+  app_a_json="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+      get serviceaccount app-a-gateway -o json
+  )"
+  app_b_json="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+      get serviceaccount app-b-engine -o json
+  )"
+
+  jq -e --arg caller "$caller_email" '
+    (.automountServiceAccountToken == false) and
+    (.metadata.annotations["iam.gke.io/gcp-service-account"] == $caller)
+  ' <<<"$app_a_json" >/dev/null \
+    || fail "$context App A Kubernetes service account is not bound to the exact caller identity"
+  jq -e '
+    (.automountServiceAccountToken == false) and
+    ((.metadata.annotations["iam.gke.io/gcp-service-account"] // "") == "")
+  ' <<<"$app_b_json" >/dev/null \
+    || fail "$context App B Kubernetes service account must remain unmapped"
+}
+
 random_hex() {
   local bytes="$1"
   od -An -N"$bytes" -tx1 /dev/urandom | tr -d ' \n'
+}
+
+verify_app_b_rejects_unauthenticated_callers() {
+  local context="$1"
+  local port_forward_log="$work_dir/app-b-port-forward-$context.log"
+  local headers="$work_dir/app-b-unauthorized-$context.headers"
+  local body="$work_dir/app-b-unauthorized-$context.body"
+  local deadline
+  local local_port=""
+  local health_status
+  local status
+
+  : >"$port_forward_log"
+  kubectl --context="$context" --namespace="$namespace" \
+    port-forward --address=127.0.0.1 service/app-b-engine :8080 \
+    >"$port_forward_log" 2>&1 &
+  active_port_forward_pid=$!
+
+  deadline=$((SECONDS + 30))
+  while ((SECONDS < deadline)); do
+    local_port="$(
+      tr -d '\r' <"$port_forward_log" \
+        | sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9][0-9]*\) -> 8080$/\1/p' \
+        | head -n 1
+    )"
+    [[ -n "$local_port" ]] && break
+    if ! kill -0 "$active_port_forward_pid" 2>/dev/null; then
+      cat "$port_forward_log" >&2
+      fail "$context App B port-forward exited before it became ready"
+    fi
+    sleep 1
+  done
+  [[ -n "$local_port" ]] || fail "$context App B port-forward did not become ready within 30s"
+
+  health_status="$(
+    curl --silent --show-error --max-time 5 \
+      --output /dev/null --write-out '%{http_code}' \
+      "http://127.0.0.1:$local_port/health/ready"
+  )"
+  [[ "$health_status" == "200" ]] \
+    || fail "$context App B authenticated deployment did not keep health checks public"
+
+  status="$(
+    curl --silent --show-error --max-time 5 \
+      --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
+      "http://127.0.0.1:$local_port/internal/exchange-rates"
+  )"
+  [[ "$status" == "401" ]] \
+    || fail "$context App B accepted an internal request without a service token"
+  [[ ! -s "$body" ]] \
+    || fail "$context App B authentication rejection exposed a response body"
+  grep -Eiq '^cache-control:[[:space:]]*no-store\r?$' "$headers" \
+    || fail "$context App B authentication rejection did not disable caching"
+  grep -Eiq '^www-authenticate:[[:space:]]*Bearer\r?$' "$headers" \
+    || fail "$context App B authentication rejection omitted the Bearer challenge"
+
+  stop_port_forward
+  printf '%s App B rejected an unauthenticated call while health remained available.\n' "$context"
 }
 
 verify_local_path() {
@@ -616,10 +724,14 @@ work_dir="$(mktemp -d "$runtime_dir/verify-workloads.XXXXXX")"
 
 wait_for_workloads gke-risk-usc1
 verify_services gke-risk-usc1 app-a-neg-usc1
+verify_service_accounts gke-risk-usc1
+verify_app_b_rejects_unauthenticated_callers gke-risk-usc1
 verify_local_path gke-risk-usc1 us-central1 gke-risk-usc1
 
 wait_for_workloads gke-risk-use4
 verify_services gke-risk-use4 app-a-neg-use4
+verify_service_accounts gke-risk-use4
+verify_app_b_rejects_unauthenticated_callers gke-risk-use4
 verify_local_path gke-risk-use4 us-east4 gke-risk-use4
 
 printf 'Verified both regional workload cells at immutable version %s.\n' "$git_sha"

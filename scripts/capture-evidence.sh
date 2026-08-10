@@ -24,6 +24,14 @@ fail() {
 : "${BILLING_ACCOUNT_ID:?BILLING_ACCOUNT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
+enable_cloud_armor="${ENABLE_CLOUD_ARMOR:-0}"
+enable_binary_authorization="${ENABLE_BINARY_AUTHORIZATION:-0}"
+for feature_flag in enable_cloud_armor enable_binary_authorization; do
+  feature_value="${!feature_flag}"
+  [[ "$feature_value" == "0" || "$feature_value" == "1" ]] \
+    || fail "${feature_flag^^} must be 0 or 1"
+done
+
 git_sha="$1"
 [[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] \
   || fail "the deployed image version must be a full lowercase Git SHA"
@@ -117,6 +125,79 @@ jq -er \
 
 bash "$repo_root/scripts/verify-workloads.sh" "$git_sha" \
   >"$work_dir/02-clusters.txt" 2>&1
+bash "$repo_root/scripts/verify-global.sh" \
+  >"$work_dir/service-auth-global.txt" 2>&1
+
+auth_log_json="$work_dir/service-auth-logging.json"
+auth_log_filter="resource.type=\"k8s_container\" AND jsonPayload.service=\"app-b-engine\" AND jsonPayload.service_version=\"$git_sha\" AND jsonPayload.decision=\"AUTH_REJECTED\" AND jsonPayload.status_code=401"
+auth_deadline=$((SECONDS + 180))
+while ((SECONDS < auth_deadline)); do
+  timeout --foreground --signal=INT --kill-after=10s 2m \
+    gcloud --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" \
+      logging read "$auth_log_filter" --freshness=30m --limit=100 \
+      --order=desc --format=json >"$auth_log_json"
+  if jq -e --arg version "$git_sha" '
+      [ .[] | .jsonPayload
+        | select(
+            .service == "app-b-engine" and
+            .service_version == $version and
+            .status_code == 401 and
+            .decision == "AUTH_REJECTED" and
+            .route == "/internal/exchange-rates" and
+            .method == "GET")
+      ] as $entries
+      | ($entries | map(.region) | unique | sort)
+          == ["us-central1", "us-east4"]
+    ' "$auth_log_json" >/dev/null; then
+    break
+  fi
+  sleep 5
+done
+jq -e --arg version "$git_sha" '
+  [ .[] | .jsonPayload
+    | select(
+        .service == "app-b-engine" and
+        .service_version == $version and
+        .status_code == 401 and
+        .decision == "AUTH_REJECTED" and
+        .route == "/internal/exchange-rates" and
+        .method == "GET")
+  ] as $entries
+  | ($entries | map(.region) | unique | sort)
+      == ["us-central1", "us-east4"]
+' "$auth_log_json" >/dev/null \
+  || fail "structured AUTH_REJECTED logs were not observed in both cells"
+{
+  command cat -- "$work_dir/service-auth-global.txt"
+  jq --arg version "$git_sha" '
+    [ .[]
+      | {
+          timestamp,
+          service: .jsonPayload.service,
+          service_version: .jsonPayload.service_version,
+          region: .jsonPayload.region,
+          cluster: .jsonPayload.cluster,
+          log_type: .jsonPayload.log_type,
+          method: .jsonPayload.method,
+          route: .jsonPayload.route,
+          status_code: .jsonPayload.status_code,
+          decision: .jsonPayload.decision,
+          rejection_type: .jsonPayload.error_type
+        }
+      | select(
+          .service == "app-b-engine" and
+          .service_version == $version and
+          .status_code == 401 and
+          .decision == "AUTH_REJECTED")
+    ]
+    | sort_by(.region)
+    | unique_by(.region)
+  ' "$auth_log_json"
+  printf 'Authenticated App A requests reached App B successfully in the workload and trace gates; direct unauthenticated calls were empty 401 responses.\n'
+} >"$work_dir/14-service-auth.txt"
+! grep -Eiq 'authorization:|bearer[[:space:]]+eyj|"token"' "$work_dir/14-service-auth.txt" \
+  || fail "service-auth evidence contains token-like material"
 
 export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
 evidence_kubeconfig="$runtime_root/kubeconfig-schwab-assessment"
@@ -267,7 +348,8 @@ if ! BQ_SEED_MAX_AGE_SECONDS="${BQ_SEED_MAX_AGE_SECONDS:-21600}" \
 fi
 for result in \
   01_error_rate.json 02_latency_percentiles.json \
-  03_trace_join.json 04_regional_traffic.json; do
+  03_trace_join.json 04_regional_traffic.json \
+  05_auth_rejections.json; do
   [[ -f "$runtime_root/bigquery-gate/$result" ]] \
     || fail "BigQuery result $result is missing"
 done
@@ -314,6 +396,8 @@ jq -e '
     "$(jq 'length' "$runtime_root/bigquery-gate/03_trace_join.json")"
   printf 'regional_traffic_rows=%s\n' \
     "$(jq 'length' "$runtime_root/bigquery-gate/04_regional_traffic.json")"
+  printf 'auth_rejection_rows=%s\n' \
+    "$(jq 'length' "$runtime_root/bigquery-gate/05_auth_rejections.json")"
 } >"$work_dir/07-bigquery.txt"
 
 python "$repo_root/scripts/render-evidence.py" export-bigquery \
@@ -332,6 +416,65 @@ python "$repo_root/scripts/render-evidence.py" bigquery \
   --regional-traffic "$work_dir/07-bigquery-regional-traffic.csv" \
   --output "$work_dir/07-bigquery.png"
 
+if [[ "$enable_cloud_armor" == "1" ]]; then
+  bash "$repo_root/scripts/test-cloud-armor.sh" exercise \
+    >"$work_dir/15-cloud-armor.txt" 2>&1
+else
+  jq -e '
+    (.cloud_armor_enabled.value == false) and
+    (.security_policy_name.value == null)
+  ' <<<"$lb_outputs" >/dev/null \
+    || fail "Cloud Armor disabled-state Terraform outputs are invalid"
+  {
+    printf 'feature=Cloud Armor\n'
+    printf 'implementation=Terraform feature flag ENABLE_CLOUD_ARMOR\n'
+    printf 'live_state=disabled\n'
+    printf 'cost_state=no Cloud Armor policy or backend request logging enabled\n'
+    printf 'verification=verify-lb confirmed no attached policy and no currency-edge-waf resource\n'
+  } >"$work_dir/15-cloud-armor.txt"
+fi
+
+if [[ "$enable_binary_authorization" == "1" ]]; then
+  {
+    bash "$repo_root/scripts/verify-binary-authorization.sh"
+    bash "$repo_root/scripts/test-binary-authorization-denial.sh"
+  } >"$work_dir/16-binary-authorization.txt" 2>&1
+else
+  global_hardening_outputs="$(terraform -chdir=infra/10-global output -json)"
+  cluster_hardening_outputs="$(terraform -chdir=infra/20-cluster output -json)"
+  jq -e '
+    (.binary_authorization_enabled.value == false) and
+    (.binary_authorization_policy_id.value == null)
+  ' <<<"$global_hardening_outputs" >/dev/null \
+    || fail "Binary Authorization disabled-state global outputs are invalid"
+  jq -e '.binary_authorization_enabled.value == false' \
+    <<<"$cluster_hardening_outputs" >/dev/null \
+    || fail "Binary Authorization disabled-state cluster output is invalid"
+
+  for cluster_spec in 'gke-risk-usc1 us-central1' 'gke-risk-use4 us-east4'; do
+    read -r cluster_name cluster_location <<<"$cluster_spec"
+    cluster_json="$(
+      gcloud --configuration="$GCLOUD_CONFIGURATION" \
+        --account="$expected_account" \
+        --project="$PROJECT_ID" \
+        container clusters describe "$cluster_name" \
+        --location="$cluster_location" \
+        --format=json
+    )"
+    jq -e '(.binaryAuthorization.evaluationMode // "DISABLED") == "DISABLED"' \
+      <<<"$cluster_json" >/dev/null \
+      || fail "Binary Authorization is unexpectedly enabled on $cluster_name"
+  done
+
+  {
+    printf 'feature=Binary Authorization\n'
+    printf 'implementation=Terraform feature flag ENABLE_BINARY_AUTHORIZATION\n'
+    printf 'live_state=disabled\n'
+    printf 'cost_state=no cluster enforcement enabled\n'
+    printf 'verification=both live clusters report Binary Authorization disabled\n'
+  } >"$work_dir/16-binary-authorization.txt"
+fi
+
 expected_outputs=(
   01-budget.txt 01-budget.png
   02-clusters.txt 03-negs.txt 04-backend-health-before.txt
@@ -341,6 +484,10 @@ expected_outputs=(
   07-bigquery-latency-percentiles.csv
   07-bigquery-trace-join.csv
   07-bigquery-regional-traffic.csv
+  07-bigquery-auth-rejections.csv
+  14-service-auth.txt
+  15-cloud-armor.txt
+  16-binary-authorization.txt
 )
 for output_name in "${expected_outputs[@]}"; do
   source_file="$work_dir/$output_name"
@@ -350,4 +497,4 @@ for output_name in "${expected_outputs[@]}"; do
   mv -f -- "$work_dir/$output_name" "$evidence_dir/$output_name"
 done
 
-printf 'Captured non-secret text, JSON, CSV, and PNG evidence 01-07 for deployed SHA %s.\n' "$git_sha"
+printf 'Captured non-secret release evidence 01-07 and hardening evidence 14-16 for deployed SHA %s.\n' "$git_sha"

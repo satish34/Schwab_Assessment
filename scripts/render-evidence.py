@@ -42,18 +42,24 @@ SCHEMAS = {
     "regional-traffic": [
         "cluster", "decision", "minute", "region", "request_count", "service",
     ],
+    "auth-rejections": [
+        "cluster", "decision", "minute", "region", "rejection_count",
+        "rejection_type", "service", "service_version",
+    ],
 }
 CSV_NAMES = {
     "error-rate": "07-bigquery-error-rate.csv",
     "latency": "07-bigquery-latency-percentiles.csv",
     "trace-join": "07-bigquery-trace-join.csv",
     "regional-traffic": "07-bigquery-regional-traffic.csv",
+    "auth-rejections": "07-bigquery-auth-rejections.csv",
 }
 JSON_NAMES = {
     "error-rate": "01_error_rate.json",
     "latency": "02_latency_percentiles.json",
     "trace-join": "03_trace_join.json",
     "regional-traffic": "04_regional_traffic.json",
+    "auth-rejections": "05_auth_rejections.json",
 }
 
 
@@ -119,15 +125,37 @@ def validate_rows(kind: str, rows: list[dict[str, Any]]) -> None:
                 require(status < 600, f"{field} must be an HTTP status")
             number(row["app_a_latency_ms"], "app_a_latency_ms")
             number(row["app_b_latency_ms"], "app_b_latency_ms")
-        else:
+        elif kind == "regional-traffic":
             require(row["region"] in REGION_CLUSTER, "unexpected traffic region")
             require(row["cluster"] == REGION_CLUSTER[row["region"]], "traffic cell mismatch")
             require(row["service"] in SERVICES, "unexpected traffic service")
             require(row["decision"] in DECISIONS, "unexpected decision")
             integer(row["request_count"], "request_count", 1)
             minute(row["minute"])
+        else:
+            require(row["region"] in REGION_CLUSTER, "unexpected auth-rejection region")
+            require(
+                row["cluster"] == REGION_CLUSTER[row["region"]],
+                "auth-rejection cell mismatch",
+            )
+            require(
+                row["service"] == "app-b-engine",
+                "unexpected auth-rejection service",
+            )
+            require(row["decision"] == "AUTH_REJECTED", "unexpected auth decision")
+            require(
+                isinstance(row["rejection_type"], str)
+                and bool(row["rejection_type"].strip()),
+                "rejection_type must be a non-empty string",
+            )
+            require(
+                SHA_RE.fullmatch(str(row["service_version"])) is not None,
+                "invalid auth-rejection service_version",
+            )
+            integer(row["rejection_count"], "rejection_count", 1)
+            minute(row["minute"])
 
-    if kind in {"trace-join", "regional-traffic"}:
+    if kind in {"trace-join", "regional-traffic", "auth-rejections"}:
         require({row["region"] for row in rows} == set(REGION_CLUSTER),
                 f"{kind} must contain both regions")
     if kind == "regional-traffic":

@@ -49,6 +49,14 @@ resource "google_container_cluster" "this" {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
+  dynamic "binary_authorization" {
+    for_each = var.enable_binary_authorization ? [true] : []
+
+    content {
+      evaluation_mode = "PROJECT_SINGLETON_POLICY_ENFORCE"
+    }
+  }
+
   cluster_autoscaling {
     auto_provisioning_defaults {
       service_account = var.node_service_account_email

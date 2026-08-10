@@ -7,3 +7,9 @@ variable "project_id" {
     error_message = "project_id must be a valid Google Cloud project ID."
   }
 }
+
+variable "enable_cloud_armor" {
+  description = "Create and attach the opt-in Cloud Armor policy and enable full backend request logging."
+  type        = bool
+  default     = false
+}

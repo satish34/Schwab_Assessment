@@ -19,6 +19,7 @@ health_poll_seconds="${LB_HEALTH_POLL_SECONDS:-10}"
 certificate_timeout_seconds="${CERTIFICATE_TIMEOUT_SECONDS:-3600}"
 certificate_poll_seconds="${CERTIFICATE_POLL_SECONDS:-15}"
 endpoint_timeout_seconds="${PUBLIC_ENDPOINT_TIMEOUT_SECONDS:-120}"
+security_csp="default-src 'none'; script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 fail() {
   printf 'verify-lb: %s\n' "$*" >&2
@@ -43,6 +44,12 @@ trap cleanup EXIT INT TERM
 
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
+
+enable_cloud_armor="${ENABLE_CLOUD_ARMOR:-0}"
+[[ "$enable_cloud_armor" == "0" || "$enable_cloud_armor" == "1" ]] \
+  || fail "ENABLE_CLOUD_ARMOR must be 0 or 1"
+cloud_armor_enabled=false
+[[ "$enable_cloud_armor" == "1" ]] && cloud_armor_enabled=true
 
 [[ "$PROJECT_ID" == "$expected_project" ]] \
   || fail "expected project $expected_project, received $PROJECT_ID"
@@ -137,9 +144,18 @@ fi
 jq -e \
   --arg address "$global_address" \
   --arg endpoint "$expected_endpoint" \
-  --argjson tls_enabled "$tls_enabled" '
+  --argjson tls_enabled "$tls_enabled" \
+  --argjson cloud_armor_enabled "$cloud_armor_enabled" '
     (.backend_service_name.value == "risk-app-a-gateway-backend") and
     (.health_check_name.value == "risk-app-a-cell-health") and
+    (.cloud_armor_enabled.value == $cloud_armor_enabled) and
+    (
+      if $cloud_armor_enabled then
+        .security_policy_name.value == "currency-edge-waf"
+      else
+        .security_policy_name.value == null
+      end
+    ) and
     (.global_ipv4_address.value == $address) and
     (.public_endpoint.value == $endpoint) and
     (.tls_enabled.value == $tls_enabled) and
@@ -198,7 +214,7 @@ jq -e '
 backend_json="$(
   gcloud_json compute backend-services describe "$backend_name" --global
 )"
-jq -e --arg project "$PROJECT_ID" '
+jq -e --arg project "$PROJECT_ID" --argjson cloud_armor_enabled "$cloud_armor_enabled" '
   (.name == "risk-app-a-gateway-backend") and
   (.loadBalancingScheme == "EXTERNAL_MANAGED") and
   (.protocol == "HTTP") and
@@ -206,6 +222,16 @@ jq -e --arg project "$PROJECT_ID" '
   (.sessionAffinity == "NONE") and
   (.timeoutSec == 10) and
   (.connectionDraining.drainingTimeoutSec == 30) and
+  (
+    if $cloud_armor_enabled then
+      (.securityPolicy | endswith("/global/securityPolicies/currency-edge-waf")) and
+      (.logConfig.enable == true) and
+      (.logConfig.sampleRate == 1)
+    else
+      ((.securityPolicy // "") == "") and
+      ((.logConfig.enable // false) == false)
+    end
+  ) and
   ((.healthChecks | length) == 1) and
   (.healthChecks[0] | endswith("/global/healthChecks/risk-app-a-cell-health")) and
   ((.backends | length) == 6) and
@@ -228,6 +254,71 @@ jq -e --arg project "$PROJECT_ID" '
   ] | sort_by(.zone))
 ' <<<"$backend_json" >/dev/null \
   || fail "the live backend service or its exact six NEG attachments is invalid"
+
+if [[ "$enable_cloud_armor" == "1" ]]; then
+  security_policy_json="$(
+    gcloud_json compute security-policies describe currency-edge-waf --global
+  )"
+  jq -e '
+  (.name == "currency-edge-waf") and
+  (.type == "CLOUD_ARMOR") and
+  ([.rules[] | {
+    priority,
+    action,
+    preview: (.preview // false),
+    expression: (.match.expr.expression // null),
+    source_ranges: (.match.config.srcIpRanges // null),
+    rate: (.rateLimitOptions // null)
+  }] == [
+    {
+      "priority":1000,
+      "action":"deny(403)",
+      "preview":true,
+      "expression":"evaluatePreconfiguredWaf(\u0027sqli-v422-stable\u0027, {\u0027sensitivity\u0027: 1})",
+      "source_ranges":null,
+      "rate":null
+    },
+    {
+      "priority":1010,
+      "action":"deny(403)",
+      "preview":true,
+      "expression":"evaluatePreconfiguredWaf(\u0027xss-v422-stable\u0027, {\u0027sensitivity\u0027: 1})",
+      "source_ranges":null,
+      "rate":null
+    },
+    {
+      "priority":2000,
+      "action":"rate_based_ban",
+      "preview":false,
+      "expression":null,
+      "source_ranges":["*"],
+      "rate":{
+        "banDurationSec":60,
+        "banThreshold":{"count":600,"intervalSec":60},
+        "conformAction":"allow",
+        "enforceOnKey":"IP",
+        "exceedAction":"deny(429)",
+        "rateLimitThreshold":{"count":120,"intervalSec":60}
+      }
+    },
+    {
+      "priority":2147483647,
+      "action":"allow",
+      "preview":false,
+      "expression":null,
+      "source_ranges":["*"],
+      "rate":null
+    }
+  ])
+' <<<"$security_policy_json" >/dev/null \
+    || fail "the live Cloud Armor policy does not match the enforced/preview contract"
+else
+  security_policy_inventory="$(
+    gcloud_json compute security-policies list --filter='name=currency-edge-waf'
+  )"
+  jq -e 'length == 0' <<<"$security_policy_inventory" >/dev/null \
+    || fail "Cloud Armor is disabled but currency-edge-waf still exists"
+fi
 
 address_json="$(
   gcloud_json compute addresses describe risk-global-ip --global
@@ -387,6 +478,8 @@ if [[ "$tls_enabled" == true ]]; then
   done
   ((no_http_consecutive >= 3)) \
     || fail "port 80 still accepted an HTTP request after the HTTPS-only propagation window"
+  printf '%s\n' \
+    'Verified no configured HTTP frontend: no port-80 forwarding rule, proxy, or redirect; plain HTTP returned no response.'
 else
   http_proxy_json="$(
     gcloud_json compute target-http-proxies describe risk-app-a-http-proxy --global
@@ -495,13 +588,30 @@ while ((SECONDS < endpoint_deadline)); do
 done
 [[ "$http_status" == "200" ]] \
   || fail "the public exchange-rate request did not return HTTP 200 within ${endpoint_timeout_seconds}s (last status ${http_status:-<none>})"
-tr -d '\r' <"$response_headers" | grep -Eiq '^content-type:[[:space:]]*application/json([[:space:]]*;.*)?$' \
+normalized_headers="$(tr -d '\r' <"$response_headers")"
+csp_header_count=0
+actual_csp=""
+while IFS= read -r header_line; do
+  if [[ "${header_line,,}" == content-security-policy:* ]]; then
+    ((csp_header_count += 1))
+    actual_csp="${header_line#*:}"
+    actual_csp="${actual_csp#"${actual_csp%%[![:space:]]*}"}"
+  fi
+done <<<"$normalized_headers"
+
+grep -Eiq '^content-type:[[:space:]]*application/json([[:space:]]*;.*)?$' <<<"$normalized_headers" \
   || fail "the public exchange-rate response is not application/json"
-tr -d '\r' <"$response_headers" | grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' \
+grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' <<<"$normalized_headers" \
   || fail "the public exchange-rate response is missing Cache-Control: no-store"
-tr -d '\r' <"$response_headers" | grep -Eiq '^x-correlation-id:[[:space:]]*[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}[[:space:]]*$' \
+grep -Eiq '^strict-transport-security:[[:space:]]*max-age=31536000; includeSubDomains[[:space:]]*$' <<<"$normalized_headers" \
+  && grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$' <<<"$normalized_headers" \
+  && grep -Eiq '^x-frame-options:[[:space:]]*DENY[[:space:]]*$' <<<"$normalized_headers" \
+  && ((csp_header_count == 1)) \
+  && [[ "$actual_csp" == "$security_csp" ]] \
+  || fail "the public API security headers do not match the hardened HTTPS contract"
+grep -Eiq '^x-correlation-id:[[:space:]]*[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}[[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate a valid public response correlation ID"
-tr -d '\r' <"$response_headers" | grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f][[:space:]]*$' \
+grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f][[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate valid public response trace context"
 
 jq -e --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" '
@@ -535,10 +645,27 @@ ui_status="$(curl --silent --show-error --max-time 20 \
   --dump-header "$ui_headers" --output "$ui_file" --write-out '%{http_code}' \
   --request GET "$expected_endpoint/")"
 [[ "$ui_status" == "200" ]] || fail "the public UI returned HTTP $ui_status"
-tr -d '\r' <"$ui_headers" | grep -Eiq '^content-type:[[:space:]]*text/html([[:space:]]*;.*)?$' \
+normalized_ui_headers="$(tr -d '\r' <"$ui_headers")"
+ui_csp_header_count=0
+actual_ui_csp=""
+while IFS= read -r header_line; do
+  if [[ "${header_line,,}" == content-security-policy:* ]]; then
+    ((ui_csp_header_count += 1))
+    actual_ui_csp="${header_line#*:}"
+    actual_ui_csp="${actual_ui_csp#"${actual_ui_csp%%[![:space:]]*}"}"
+  fi
+done <<<"$normalized_ui_headers"
+
+grep -Eiq '^content-type:[[:space:]]*text/html([[:space:]]*;.*)?$' <<<"$normalized_ui_headers" \
   || fail "the public UI is not text/html"
-tr -d '\r' <"$ui_headers" | grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' \
+grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' <<<"$normalized_ui_headers" \
   || fail "the public UI is missing Cache-Control: no-store"
+grep -Eiq '^strict-transport-security:[[:space:]]*max-age=31536000; includeSubDomains[[:space:]]*$' <<<"$normalized_ui_headers" \
+  && grep -Eiq '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$' <<<"$normalized_ui_headers" \
+  && grep -Eiq '^x-frame-options:[[:space:]]*DENY[[:space:]]*$' <<<"$normalized_ui_headers" \
+  && ((ui_csp_header_count == 1)) \
+  && [[ "$actual_ui_csp" == "$security_csp" ]] \
+  || fail "the public UI security headers do not match the hardened HTTPS contract"
 for marker in \
   'id="exchange-rate-app"' \
   'data-api-endpoint="/api/exchange-rates"' \

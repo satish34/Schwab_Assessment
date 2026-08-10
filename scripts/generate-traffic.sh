@@ -17,6 +17,9 @@ request_interval_seconds="${TRAFFIC_INTERVAL_SECONDS:-1}"
 fault_timeout_seconds="${FAULT_ACTIVATION_TIMEOUT_SECONDS:-180}"
 recovery_timeout_seconds="${FAULT_RECOVERY_TIMEOUT_SECONDS:-240}"
 backend_timeout_seconds="${BACKEND_RECOVERY_TIMEOUT_SECONDS:-180}"
+app_b_token_audience="https://app-b-engine.schwab-assessment.internal"
+app_b_internal_url="http://app-b-engine.risk-system.svc.cluster.local:8080/internal/exchange-rates"
+metadata_identity_url="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
 work_dir=""
 events_file=""
 active_port_forward_pid=""
@@ -25,6 +28,7 @@ request_counter=0
 request_status=""
 request_correlation_id=""
 request_trace_id=""
+request_traceparent=""
 request_response_file=""
 request_region=""
 request_cluster=""
@@ -284,9 +288,7 @@ random_uuid() {
     "${value:16:4}" "${value:20:12}"
 }
 
-issue_request() {
-  local base_url="$1"
-  local route="$2"
+prepare_request_context() {
   local span_id
 
   request_counter=$((request_counter + 1))
@@ -298,6 +300,14 @@ issue_request() {
   [[ "$span_id" != "0000000000000000" ]] \
     || span_id="1${span_id:1}"
   request_response_file="$work_dir/response-$request_counter.json"
+  request_traceparent="00-$request_trace_id-$span_id-01"
+}
+
+issue_request() {
+  local base_url="$1"
+  local route="$2"
+
+  prepare_request_context
 
   request_status="$(
     curl --silent --show-error --max-time 15 \
@@ -305,9 +315,127 @@ issue_request() {
       --request GET "$base_url$route" \
       --header 'Accept: application/json' \
       --header "x-correlation-id: $request_correlation_id" \
-      --header "traceparent: 00-$request_trace_id-$span_id-01" \
+      --header "traceparent: $request_traceparent" \
       2>/dev/null || true
   )"
+  request_region=""
+  request_cluster=""
+  if [[ "$request_status" == "200" ]]; then
+    request_region="$(jq -r '.providedBy.region // ""' "$request_response_file")"
+    request_cluster="$(jq -r '.providedBy.cluster // ""' "$request_response_file")"
+  fi
+}
+
+ready_app_a_pod() {
+  local context="$1"
+  local pods
+
+  pods="$(
+    kubectl --context="$context" --namespace="$namespace" --request-timeout=30s \
+      get pods --selector='app=app-a-gateway' -o json
+  )"
+  jq -r '
+    [
+      .items[]
+      | select(.metadata.deletionTimestamp == null)
+      | select(.status.phase == "Running")
+      | select(.spec.serviceAccountName == "app-a-gateway")
+      | select(any(.status.conditions[]?;
+          .type == "Ready" and .status == "True"))
+      | select(any(.status.containerStatuses[]?;
+          .name == "app-a-gateway" and .ready == true))
+    ]
+    | sort_by(.metadata.name)
+    | .[0].metadata.name // ""
+  ' <<<"$pods"
+}
+
+issue_authenticated_app_b_request() {
+  local context="$1"
+  local pod exec_output response_body
+
+  prepare_request_context
+  pod="$(ready_app_a_pod "$context")"
+  [[ -n "$pod" ]] \
+    || fail "$context has no ready App A Pod available for the authenticated App B probe"
+
+  # The identity token exists only in the in-Pod shell and curl process. The
+  # exec stream returns the App B status and body, never the bearer token.
+  if ! exec_output="$(
+      timeout --foreground --signal=INT --kill-after=5s 30s \
+        kubectl --context="$context" --namespace="$namespace" \
+          --request-timeout=25s exec "$pod" --container=app-a-gateway -- \
+          sh -eu -c '
+            audience="$1"
+            metadata_url="$2"
+            app_b_url="$3"
+            correlation_id="$4"
+            traceparent="$5"
+            token=""
+            umask 077
+            body="$(mktemp /tmp/app-b-evidence.XXXXXX)"
+            cleanup_probe() {
+              token=""
+              rm -f -- "$body"
+            }
+            trap cleanup_probe EXIT
+            trap "cleanup_probe; exit 1" HUP INT TERM
+
+            if ! token="$(
+              curl --fail --silent --show-error --noproxy "*" \
+                --proto "=http" --connect-timeout 2 --max-time 10 \
+                --retry 1 --retry-all-errors --retry-delay 0 \
+                --max-filesize 16384 --get "$metadata_url" \
+                --header "Metadata-Flavor: Google" \
+                --data-urlencode "audience=$audience" \
+                --data-urlencode "format=full"
+            )"; then
+              exit 70
+            fi
+            case "$token" in
+              "" | *[!A-Za-z0-9._-]* | .* | *..* | *. | *.*.*.*)
+                exit 71
+                ;;
+              *.*.*) ;;
+              *) exit 71 ;;
+            esac
+            [ "${#token}" -le 16384 ] || exit 71
+
+            if ! status="$(
+              printf "header = \"Authorization: Bearer %s\"\n" "$token" \
+                | curl --silent --show-error --noproxy "*" \
+                  --config - --proto "=http" --connect-timeout 2 \
+                  --max-time 15 --max-filesize 1048576 --output "$body" \
+                  --write-out "%{http_code}" --request GET "$app_b_url" \
+                  --header "Accept: application/json" \
+                  --header "x-correlation-id: $correlation_id" \
+                  --header "traceparent: $traceparent"
+            )"; then
+              exit 72
+            fi
+            token=""
+            case "$status" in
+              [0-9][0-9][0-9]) ;;
+              *) exit 73 ;;
+            esac
+            cat "$body"
+            printf "\n%s\n" "$status"
+          ' app-b-evidence \
+          "$app_b_token_audience" "$metadata_identity_url" \
+          "$app_b_internal_url" "$request_correlation_id" \
+          "$request_traceparent"
+    )"; then
+    fail "$context authenticated in-Pod App B request failed closed"
+  fi
+
+  [[ "$exec_output" == *$'\n'* ]] \
+    || fail "$context authenticated App B request returned an invalid exec result"
+  request_status="${exec_output##*$'\n'}"
+  response_body="${exec_output%$'\n'*}"
+  [[ "$request_status" =~ ^[0-9]{3}$ ]] \
+    || fail "$context authenticated App B request returned an invalid HTTP status"
+  printf '%s' "$response_body" >"$request_response_file"
+
   request_region=""
   request_cluster=""
   if [[ "$request_status" == "200" ]]; then
@@ -414,11 +542,20 @@ seed_successes() {
   local base_url="$2"
   local expected_region="${3:-}"
   local expected_cluster="${4:-}"
-  local round sample
+  local round sample attempt
 
   for ((round = 1; round <= success_rounds; round++)); do
     for sample in 1 2 3; do
-      issue_request "$base_url" /api/exchange-rates
+      for attempt in 1 2 3; do
+        issue_request "$base_url" /api/exchange-rates
+        [[ "$request_status" == "200" ]] && break
+        case "$request_status" in
+          "" | 000 | 503 | 504) sleep 2 ;;
+          *) fail "synthetic request returned unexpected HTTP $request_status" ;;
+        esac
+      done
+      [[ "$request_status" == "200" ]] \
+        || fail "synthetic request did not recover after three bounded attempts"
       assert_success_response "$expected_region" "$expected_cluster"
       record_event "$path" app-a-gateway success \
         "$request_region" "$request_cluster" RATES_RETURNED
@@ -469,6 +606,32 @@ wait_for_direct_status() {
     sleep 2
   done
   stop_port_forward
+  return 1
+}
+
+wait_for_authenticated_app_b_status() {
+  local context="$1"
+  local expected_status="$2"
+  local deadline="$3"
+  local expected_region="$4"
+  local expected_cluster="$5"
+
+  while ((SECONDS < deadline)); do
+    issue_authenticated_app_b_request "$context"
+    if [[ "$request_status" == "$expected_status" ]]; then
+      if [[ "$expected_status" == "200" ]]; then
+        assert_success_response "$expected_region" "$expected_cluster"
+      fi
+      return 0
+    fi
+    case "$request_status" in
+      200 | 503) ;;
+      *)
+        fail "$context authenticated App B probe returned unexpected HTTP ${request_status:-<none>}"
+        ;;
+    esac
+    sleep 2
+  done
   return 1
 }
 
@@ -537,31 +700,19 @@ exercise_controlled_error() {
   local context="$1"
   local expected_region="$2"
   local expected_cluster="$3"
-  local fault_deadline recovery_deadline pod
-  local pods=()
+  local fault_deadline recovery_deadline sample
 
   needs_restore[$context]=1
   apply_fault_profile "$context" unavailable 1.0
   fault_deadline=$((SECONDS + fault_timeout_seconds))
-  mapfile -t pods < <(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=30s \
-      get pods -l app=app-b-engine -o json \
-      | jq -r '
-          .items[] |
-          select(.metadata.deletionTimestamp == null) |
-          select(.status.phase == "Running") |
-          select(all(.status.containerStatuses[]?; .ready == true)) |
-          .metadata.name
-        ' \
-      | tr -d '\r' | sort
-  )
-  ((${#pods[@]} >= 2 && ${#pods[@]} <= 6)) \
-    || fail "$context does not have two to six running App B Pods"
 
-  for pod in "${pods[@]}"; do
-    wait_for_direct_status "$context" "pod/$pod" /internal/exchange-rates 503 \
-      "$fault_deadline" "$expected_region" "$expected_cluster" \
-      || fail "$context App B Pod $pod did not load the unavailable profile within ${fault_timeout_seconds}s"
+  # Probe App B directly from an App A Pod so every App B evidence identifier
+  # corresponds to a request that reached App B, independent of App A health
+  # caching and circuit-breaker behavior.
+  for sample in 1 2; do
+    wait_for_authenticated_app_b_status "$context" 503 "$fault_deadline" \
+      "$expected_region" "$expected_cluster" \
+      || fail "$context App B did not return the authenticated controlled error within ${fault_timeout_seconds}s"
     record_event cell app-b-engine controlled_error \
       "$expected_region" "$expected_cluster" ""
   done
@@ -574,10 +725,10 @@ exercise_controlled_error() {
 
   apply_fault_profile "$context" healthy 0.0
   recovery_deadline=$((SECONDS + recovery_timeout_seconds))
-  for pod in "${pods[@]}"; do
-    wait_for_direct_status "$context" "pod/$pod" /internal/exchange-rates 200 \
-      "$recovery_deadline" "$expected_region" "$expected_cluster" \
-      || fail "$context App B Pod $pod did not recover within ${recovery_timeout_seconds}s"
+  for sample in 1 2; do
+    wait_for_authenticated_app_b_status "$context" 200 "$recovery_deadline" \
+      "$expected_region" "$expected_cluster" \
+      || fail "$context App B did not recover for the authenticated in-Pod caller within ${recovery_timeout_seconds}s"
     record_event cell app-b-engine success \
       "$expected_region" "$expected_cluster" RATES_RETURNED
   done

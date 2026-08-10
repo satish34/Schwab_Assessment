@@ -145,6 +145,7 @@ if service_enabled compute.googleapis.com; then
   record_names subnetworks "$(gcloud_scoped compute networks subnets list --format='value(name,region)')"
   record_names firewall_rules "$(gcloud_scoped compute firewall-rules list --format='value(name)')"
   record_names network_endpoint_groups "$(gcloud_scoped compute network-endpoint-groups list --format='value(name,zone)')"
+  record_names security_policies "$(gcloud_scoped compute security-policies list --format='value(name)')"
 else
   printf 'compute_resources=0 (API disabled)\n'
 fi
@@ -193,13 +194,33 @@ fi
 
 record_names assessment_service_accounts "$(
   gcloud_scoped iam service-accounts list --format='value(email)' \
-    | grep -E '^(risk-gke-usc1-nodes|risk-gke-use4-nodes|risk-cloud-build|grafana-reader)@' \
+    | grep -E '^(risk-gke-usc1-nodes|risk-gke-use4-nodes|risk-cloud-build|grafana-reader|currency-app-a-caller)@' \
     || true
 )"
 record_names assessment_log_sinks "$(
   gcloud_scoped logging sinks list --format='value(name)' \
     --filter='name=risk-app-stdout-to-bigquery'
 )"
+
+if service_enabled binaryauthorization.googleapis.com; then
+  binauthz_policy="$(
+    gcloud_scoped container binauthz policy export --format=json
+  )"
+  if jq -e '
+      (.globalPolicyEvaluationMode == "ENABLE") and
+      (.defaultAdmissionRule.evaluationMode == "ALWAYS_ALLOW") and
+      ((.admissionWhitelistPatterns // []) == []) and
+      ((.clusterAdmissionRules // {}) == {}) and
+      ((.kubernetesNamespaceAdmissionRules // {}) == {}) and
+      ((.kubernetesServiceAccountAdmissionRules // {}) == {})
+    ' <<<"$binauthz_policy" >/dev/null; then
+    printf 'binary_authorization_enforced_policy=0\n'
+  else
+    record_names binary_authorization_enforced_policy "$PROJECT_ID/policy"
+  fi
+else
+  printf 'binary_authorization_enforced_policy=0 (API disabled)\n'
+fi
 
 if ((orphan_count > 0)); then
   printf 'overall=FAIL orphan_count=%s\n' "$orphan_count"

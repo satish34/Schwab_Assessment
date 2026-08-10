@@ -10,6 +10,14 @@ output "health_check_name" {
   value = google_compute_health_check.app_a_cell.name
 }
 
+output "security_policy_name" {
+  value = var.enable_cloud_armor ? google_compute_security_policy.currency_edge[0].name : null
+}
+
+output "cloud_armor_enabled" {
+  value = var.enable_cloud_armor
+}
+
 output "global_ipv4_address" {
   value = local.global_outputs.global_ipv4_address
 }
