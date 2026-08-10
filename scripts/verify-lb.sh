@@ -117,7 +117,10 @@ jq -e '
 
 state_domain="$(jq -r '.domain_name.value // ""' <<<"$global_outputs")"
 certificate_map_id="$(jq -r '.certificate_map_id.value // ""' <<<"$global_outputs")"
+project_number="$(jq -r '.project_number.value // "" | tostring' <<<"$global_outputs")"
 global_address="$(jq -r '.global_ipv4_address.value // ""' <<<"$global_outputs")"
+[[ "$project_number" =~ ^[0-9]+$ ]] \
+  || fail "10-global must export a numeric project number"
 requested_domain="$(
   printf '%s' "${DOMAIN_NAME:-}" | tr '[:upper:]' '[:lower:]' | sed 's/[.]$//'
 )"
@@ -329,13 +332,13 @@ if [[ "$tls_enabled" == true ]]; then
     (.name | endswith("/locations/global/certificateMaps/risk-cert-map"))
   ' <<<"$certificate_map_json" >/dev/null \
     || fail "the live Certificate Manager map has the wrong identity"
-  jq -e --arg domain "$state_domain" '
+  jq -e --arg domain "$state_domain" --arg project_number "$project_number" '
     (.name | endswith(
       "/locations/global/certificateMaps/risk-cert-map/certificateMapEntries/risk-domain"
     )) and
     (.hostname == $domain) and
     (.certificates == [
-      "projects/" + $ENV.PROJECT_ID + "/locations/global/certificates/risk-cert"
+      "projects/" + $project_number + "/locations/global/certificates/risk-cert"
     ])
   ' <<<"$certificate_entry_json" >/dev/null \
     || fail "the certificate-map entry is not paired to the trusted domain and risk-cert"
