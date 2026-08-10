@@ -4,11 +4,14 @@ This stack enables the assessment APIs and creates the project-scoped $30
 monthly safety budget. The project and billing link must already exist. It
 creates no workload infrastructure.
 
+From the repository root:
+
 ```bash
 make bootstrap
 ```
 
-Set `BILLING_ACCOUNT_ID` in the ignored root `.env` or the environment first.
+Copy `.env.example` to the ignored root `.env`, then set its real
+`BILLING_ACCOUNT_ID` and admin CIDR before running preflight or apply.
 The budget uses Google's default email recipients: Billing Account
 Administrators and Billing Account Users.
 

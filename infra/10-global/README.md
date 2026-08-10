@@ -18,7 +18,7 @@ Run this after `00-bootstrap` through the root `make global` command. The apply
 gate must confirm the sink's returned writer identity has
 `roles/bigquery.dataEditor` on only `risk_logs`.
 
-`domain_name` is empty for the core HTTP path. If an owned domain is supplied,
-apply `00-bootstrap` first so it enables the DNS and Certificate Manager APIs,
-then delegate it to the output name servers. Terraform creates no certificate
-key.
+An empty `domain_name` is only a temporary bootstrap or recovery mode. The
+final assessment supplies an owned domain, so apply `00-bootstrap` first to
+enable the DNS and Certificate Manager APIs, then delegate the domain to the
+output name servers. Terraform creates no certificate key.
