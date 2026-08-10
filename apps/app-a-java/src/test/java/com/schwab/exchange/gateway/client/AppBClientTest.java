@@ -12,11 +12,15 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.schwab.exchange.gateway.TestExchangeRateFixtures;
+import com.schwab.exchange.gateway.auth.AppBIdentityTokenProvider;
+import com.schwab.exchange.gateway.auth.DisabledAppBIdentityTokenProvider;
+import com.schwab.exchange.gateway.auth.IdentityTokenUnavailableException;
 import com.schwab.exchange.gateway.telemetry.TraceContext;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import java.net.SocketTimeoutException;
 import java.time.Duration;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
@@ -26,6 +30,8 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 class AppBClientTest {
+
+  private static final String IDENTITY_TOKEN = "google-signed-id-token";
 
   private static final TraceContext TRACE_CONTEXT =
       new TraceContext(
@@ -41,7 +47,7 @@ class AppBClientTest {
     RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
     server = MockRestServiceServer.bindTo(builder).build();
     circuitBreaker = newCircuitBreaker();
-    client = new AppBClient(builder.build(), circuitBreaker);
+    client = new AppBClient(builder.build(), circuitBreaker, () -> Optional.of(IDENTITY_TOKEN));
   }
 
   @Test
@@ -52,6 +58,7 @@ class AppBClientTest {
         .andExpect(header("x-correlation-id", TRACE_CONTEXT.correlationId()))
         .andExpect(header("traceparent", TRACE_CONTEXT.traceparent()))
         .andExpect(header("x-cell-probe", "true"))
+        .andExpect(header("Authorization", "Bearer " + IDENTITY_TOKEN))
         .andRespond(
             withSuccess(TestExchangeRateFixtures.RESPONSE_JSON, MediaType.APPLICATION_JSON));
 
@@ -78,6 +85,7 @@ class AppBClientTest {
         .expect(once(), requestTo("http://app-b-engine:8080/internal/exchange-rates"))
         .andExpect(method(HttpMethod.GET))
         .andExpect(headerDoesNotExist("x-cell-probe"))
+        .andExpect(header("Authorization", "Bearer " + IDENTITY_TOKEN))
         .andRespond(
             withSuccess(TestExchangeRateFixtures.RESPONSE_JSON, MediaType.APPLICATION_JSON));
 
@@ -87,9 +95,61 @@ class AppBClientTest {
   }
 
   @Test
+  void disabledModeOmitsAuthorization() {
+    RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
+    MockRestServiceServer disabledServer = MockRestServiceServer.bindTo(builder).build();
+    AppBClient disabledClient =
+        new AppBClient(
+            builder.build(), newCircuitBreaker(), DisabledAppBIdentityTokenProvider.INSTANCE);
+    disabledServer
+        .expect(once(), requestTo("http://app-b-engine:8080/internal/exchange-rates"))
+        .andExpect(headerDoesNotExist("Authorization"))
+        .andRespond(
+            withSuccess(TestExchangeRateFixtures.RESPONSE_JSON, MediaType.APPLICATION_JSON));
+
+    disabledClient.getExchangeRates(TRACE_CONTEXT, false);
+
+    disabledServer.verify();
+  }
+
+  @Test
+  void googleAuthenticationNeverCallsAppBWithAnEmptyToken() {
+    RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
+    MockRestServiceServer unusedServer = MockRestServiceServer.bindTo(builder).build();
+    AppBClient failedClient = new AppBClient(builder.build(), newCircuitBreaker(), Optional::empty);
+
+    assertThatThrownBy(() -> failedClient.getExchangeRates(TRACE_CONTEXT, false))
+        .isInstanceOf(DependencyUnavailableException.class)
+        .hasMessage("Local exchange-rate dependency is unavailable");
+    unusedServer.verify();
+  }
+
+  @Test
+  void tokenAcquisitionFailureFailsClosedWithoutCallingAppBOrLeakingAToken() {
+    String sensitiveToken = "sensitive-token-value";
+    AppBIdentityTokenProvider failedProvider =
+        () -> {
+          if (!sensitiveToken.isEmpty()) {
+            throw new IdentityTokenUnavailableException();
+          }
+          return Optional.empty();
+        };
+    RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
+    MockRestServiceServer unusedServer = MockRestServiceServer.bindTo(builder).build();
+    AppBClient failedClient = new AppBClient(builder.build(), newCircuitBreaker(), failedProvider);
+
+    assertThatThrownBy(() -> failedClient.getExchangeRates(TRACE_CONTEXT, false))
+        .isInstanceOf(DependencyUnavailableException.class)
+        .hasMessage("Local exchange-rate dependency is unavailable")
+        .satisfies(exception -> assertThat(stackTrace(exception)).doesNotContain(sensitiveToken));
+    unusedServer.verify();
+  }
+
+  @Test
   void retriesOneTimeoutThenMapsToGatewayTimeout() {
     server
         .expect(times(2), requestTo("http://app-b-engine:8080/internal/exchange-rates"))
+        .andExpect(header("Authorization", "Bearer " + IDENTITY_TOKEN))
         .andRespond(
             request -> {
               throw new SocketTimeoutException("simulated read timeout");
@@ -230,5 +290,11 @@ class AppBClientTest {
             .waitDurationInOpenState(Duration.ofSeconds(10))
             .build();
     return CircuitBreaker.of("test-app-b", config);
+  }
+
+  private static String stackTrace(Throwable throwable) {
+    java.io.StringWriter output = new java.io.StringWriter();
+    throwable.printStackTrace(new java.io.PrintWriter(output));
+    return output.toString();
   }
 }

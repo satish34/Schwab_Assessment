@@ -3,6 +3,8 @@ package com.schwab.exchange.gateway.client;
 import com.schwab.exchange.gateway.api.model.CurrencyRates;
 import com.schwab.exchange.gateway.api.model.ExchangeRatesResponse;
 import com.schwab.exchange.gateway.api.model.ProvidedBy;
+import com.schwab.exchange.gateway.auth.AppBIdentityTokenProvider;
+import com.schwab.exchange.gateway.auth.IdentityTokenUnavailableException;
 import com.schwab.exchange.gateway.telemetry.TraceContext;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
@@ -10,6 +12,7 @@ import java.math.BigDecimal;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.springframework.stereotype.Component;
@@ -37,10 +40,15 @@ public class AppBClient {
 
   private final RestClient restClient;
   private final CircuitBreaker circuitBreaker;
+  private final AppBIdentityTokenProvider identityTokenProvider;
 
-  public AppBClient(RestClient appBRestClient, CircuitBreaker appBCircuitBreaker) {
+  public AppBClient(
+      RestClient appBRestClient,
+      CircuitBreaker appBCircuitBreaker,
+      AppBIdentityTokenProvider identityTokenProvider) {
     this.restClient = appBRestClient;
     this.circuitBreaker = appBCircuitBreaker;
+    this.identityTokenProvider = identityTokenProvider;
   }
 
   public DownstreamResult getExchangeRates(TraceContext traceContext, boolean cellProbe) {
@@ -62,6 +70,9 @@ public class AppBClient {
         throw new DownstreamTimeoutException(latencyMs, exception);
       }
       throw new DependencyUnavailableException("dependency_unavailable", latencyMs, exception);
+    } catch (IdentityTokenUnavailableException exception) {
+      throw new DependencyUnavailableException(
+          "dependency_unavailable", elapsedMillis(startedAt), exception);
     } catch (RestClientException | InvalidDownstreamResponseException exception) {
       throw new DependencyUnavailableException(
           "dependency_unavailable", elapsedMillis(startedAt), exception);
@@ -70,6 +81,20 @@ public class AppBClient {
 
   private ExchangeRatesResponse executeWithBoundedRetry(
       TraceContext traceContext, boolean cellProbe) {
+    Optional<String> providedToken = identityTokenProvider.identityToken();
+    if (providedToken == null) {
+      throw new IdentityTokenUnavailableException();
+    }
+    final Optional<String> identityToken;
+    if (identityTokenProvider.authenticationRequired()) {
+      String token = providedToken.orElseThrow(IdentityTokenUnavailableException::new);
+      if (token.isBlank() || token.chars().anyMatch(Character::isWhitespace)) {
+        throw new IdentityTokenUnavailableException();
+      }
+      identityToken = providedToken;
+    } else {
+      identityToken = Optional.empty();
+    }
     int attempt = 0;
     while (true) {
       try {
@@ -80,6 +105,7 @@ public class AppBClient {
                 headers -> {
                   headers.set("x-correlation-id", traceContext.correlationId());
                   headers.set("traceparent", traceContext.traceparent());
+                  identityToken.ifPresent(headers::setBearerAuth);
                   if (cellProbe) {
                     headers.set("x-cell-probe", "true");
                   }

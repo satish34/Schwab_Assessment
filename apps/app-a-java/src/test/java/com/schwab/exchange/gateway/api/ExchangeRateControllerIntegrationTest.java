@@ -48,6 +48,12 @@ class ExchangeRateControllerIntegrationTest {
   private static final String TRACEPARENT =
       "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
   private static final String DISCLAIMER = TestExchangeRateFixtures.DISCLAIMER;
+  private static final String CONTENT_SECURITY_POLICY =
+      "default-src 'none'; "
+          + "script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; "
+          + "style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; "
+          + "img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+          + "frame-ancestors 'none'";
 
   @Autowired private MockMvc mockMvc;
 
@@ -133,6 +139,31 @@ class ExchangeRateControllerIntegrationTest {
         .andExpect(header().stringValues(HttpHeaders.CACHE_CONTROL, "no-store"))
         .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"))
         .andExpect(jsonPath("$.message").value("Request validation failed"));
+
+    verifyNoInteractions(appBClient);
+  }
+
+  @Test
+  void appliesSecurityHeadersToHttpsErrorResponsesButKeepsLocalHttpWithoutHsts() throws Exception {
+    mockMvc
+        .perform(
+            get("/api/exchange-rates")
+                .queryParam("base", "EUR")
+                .header("X-Forwarded-Proto", "https"))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            header().string("Strict-Transport-Security", "max-age=31536000; includeSubDomains"))
+        .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+        .andExpect(header().string("X-Frame-Options", "DENY"))
+        .andExpect(header().string("Content-Security-Policy", CONTENT_SECURITY_POLICY));
+
+    mockMvc
+        .perform(get("/api/exchange-rates").queryParam("base", "EUR"))
+        .andExpect(status().isBadRequest())
+        .andExpect(header().doesNotExist("Strict-Transport-Security"))
+        .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+        .andExpect(header().string("X-Frame-Options", "DENY"))
+        .andExpect(header().string("Content-Security-Policy", CONTENT_SECURITY_POLICY));
 
     verifyNoInteractions(appBClient);
   }
@@ -250,6 +281,10 @@ class ExchangeRateControllerIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
             .andExpect(header().stringValues(HttpHeaders.CACHE_CONTROL, "no-store"))
+            .andExpect(header().doesNotExist("Strict-Transport-Security"))
+            .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+            .andExpect(header().string("X-Frame-Options", "DENY"))
+            .andExpect(header().string("Content-Security-Policy", CONTENT_SECURITY_POLICY))
             .andReturn()
             .getResponse()
             .getContentAsString();

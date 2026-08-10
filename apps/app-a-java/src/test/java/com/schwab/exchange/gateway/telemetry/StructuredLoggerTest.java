@@ -8,6 +8,7 @@ import com.schwab.exchange.gateway.TestExchangeRateFixtures;
 import com.schwab.exchange.gateway.api.model.ExchangeRatesResponse;
 import com.schwab.exchange.gateway.client.DownstreamResult;
 import com.schwab.exchange.gateway.config.AppAProperties;
+import com.schwab.exchange.gateway.config.AppBAuthMode;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Set;
@@ -52,9 +53,12 @@ class StructuredLoggerTest {
             "gke-risk-usc1",
             "abc123",
             URI.create("http://app-b-engine:8080"),
+            AppBAuthMode.GOOGLE_ID_TOKEN,
+            "https://app-b-engine.schwab-assessment.internal",
             "schwab-assessment-gke",
             Duration.ofMillis(500),
             Duration.ofMillis(750),
+            Duration.ofSeconds(3),
             true,
             2000,
             3,

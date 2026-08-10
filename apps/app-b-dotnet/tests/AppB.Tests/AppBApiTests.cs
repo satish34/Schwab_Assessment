@@ -97,6 +97,134 @@ public sealed class AppBApiTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("/health/live")]
+    [InlineData("/health/ready")]
+    public async Task HealthEndpointsRemainUnauthenticatedWhenCallerAuthIsEnabled(string path)
+    {
+        var verifier = new StubGoogleIdTokenVerifier(
+            GoogleIdTokenVerificationResult.Valid(CreateValidTokenClaims()));
+        await using var factory = new AppBFactory(
+            authMode: AppBAuthenticationSettings.GoogleIdTokenModeName,
+            tokenVerifier: verifier);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(0, verifier.CallCount);
+    }
+
+    [Fact]
+    public async Task ValidGoogleCallerTokenPreservesTheSuccessContract()
+    {
+        var verifier = new StubGoogleIdTokenVerifier(
+            GoogleIdTokenVerificationResult.Valid(CreateValidTokenClaims()));
+        await using var factory = new AppBFactory(
+            authMode: AppBAuthenticationSettings.GoogleIdTokenModeName,
+            tokenVerifier: verifier);
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+        request.Headers.TryAddWithoutValidation(
+            "Authorization",
+            "Bearer header.payload.signature");
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"rateSnapshots\"", body, StringComparison.Ordinal);
+        Assert.Equal(1, verifier.CallCount);
+        Assert.Equal("header.payload.signature", verifier.LastToken);
+        Assert.Equal(AppBAuthenticationSettings.DefaultAudience, verifier.LastAudience);
+    }
+
+    [Fact]
+    public async Task MissingCallerTokenReturnsDeterministic401AndFrozenAuthLog()
+    {
+        var verifier = new StubGoogleIdTokenVerifier(
+            GoogleIdTokenVerificationResult.Valid(CreateValidTokenClaims()));
+        await using var factory = new AppBFactory(
+            authMode: AppBAuthenticationSettings.GoogleIdTokenModeName,
+            tokenVerifier: verifier);
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal("Bearer", Assert.Single(response.Headers.WwwAuthenticate).Scheme);
+        Assert.Equal(string.Empty, body);
+        Assert.Equal(0, verifier.CallCount);
+
+        var entries = factory.LogOutput.ToString().Split(
+            ["\r\n", "\n"],
+            StringSplitOptions.RemoveEmptyEntries);
+        var rejectionLine = Assert.Single(entries, entry =>
+        {
+            using var document = JsonDocument.Parse(entry);
+            return document.RootElement.GetProperty("decision").GetString() == "AUTH_REJECTED";
+        });
+        using var rejectionDocument = JsonDocument.Parse(rejectionLine);
+        var rejection = rejectionDocument.RootElement;
+        Assert.Equal(19, rejection.EnumerateObject().Count());
+        Assert.Equal(401, rejection.GetProperty("status_code").GetInt32());
+        Assert.Equal("authorization_missing", rejection.GetProperty("error_type").GetString());
+        Assert.Equal("/internal/exchange-rates", rejection.GetProperty("route").GetString());
+        Assert.Equal("GET", rejection.GetProperty("method").GetString());
+    }
+
+    [Fact]
+    public async Task InvalidSignedTokenIsRejectedWithoutWritingTheToken()
+    {
+        const string token = "secret.header.signature";
+        var verifier = new StubGoogleIdTokenVerifier(
+            GoogleIdTokenVerificationResult.InvalidToken);
+        await using var factory = new AppBFactory(
+            authMode: AppBAuthenticationSettings.GoogleIdTokenModeName,
+            tokenVerifier: verifier);
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(1, verifier.CallCount);
+        Assert.DoesNotContain(token, factory.LogOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains("\"decision\":\"AUTH_REJECTED\"", factory.LogOutput.ToString());
+        Assert.Contains("\"error_type\":\"token_validation_failed\"", factory.LogOutput.ToString());
+    }
+
+    [Fact]
+    public async Task VerifierOutageReturnsTheSameEmpty401WithoutWritingTheToken()
+    {
+        const string token = "secret.verifier.outage";
+        var verifier = new StubGoogleIdTokenVerifier(
+            GoogleIdTokenVerificationResult.VerifierUnavailable);
+        await using var factory = new AppBFactory(
+            authMode: AppBAuthenticationSettings.GoogleIdTokenModeName,
+            tokenVerifier: verifier);
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal(string.Empty, body);
+        Assert.Equal(1, verifier.CallCount);
+        Assert.DoesNotContain(token, factory.LogOutput.ToString(), StringComparison.Ordinal);
+        Assert.Contains(
+            "\"error_type\":\"token_verifier_unavailable\"",
+            factory.LogOutput.ToString(),
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task PostIsNotAllowedOnTheGetOnlyEndpoint()
     {
@@ -313,12 +441,29 @@ public sealed class AppBApiTests
         }
     }
 
-    private sealed class AppBFactory(string? faultPath = null) : WebApplicationFactory<Program>
+    private static GoogleIdTokenClaims CreateValidTokenClaims()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return new GoogleIdTokenClaims(
+            "https://accounts.google.com",
+            [AppBAuthenticationSettings.DefaultAudience],
+            now - 60,
+            now + 3600,
+            now - 60,
+            "currency-app-a-caller@test-project.iam.gserviceaccount.com",
+            true);
+    }
+
+    private sealed class AppBFactory(
+        string? faultPath = null,
+        string authMode = AppBAuthenticationSettings.DisabledModeName,
+        IGoogleIdTokenVerifier? tokenVerifier = null) : WebApplicationFactory<Program>
     {
         public StringWriter LogOutput { get; } = new();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            builder.UseEnvironment("Development");
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -327,6 +472,10 @@ public sealed class AppBApiTests
                     ["SERVICE_CLUSTER"] = "gke-currency-usc1",
                     ["SERVICE_VERSION"] = "test-sha",
                     ["GOOGLE_CLOUD_PROJECT"] = "test-project",
+                    ["APP_B_AUTH_MODE"] = authMode,
+                    ["APP_B_TOKEN_AUDIENCE"] = AppBAuthenticationSettings.DefaultAudience,
+                    ["APP_A_IDENTITY_EMAIL"] =
+                        "currency-app-a-caller@test-project.iam.gserviceaccount.com",
                     ["FAULT_CONFIG_PATH"] = faultPath ?? Path.Combine(
                         Path.GetTempPath(),
                         $"missing-app-b-fault-{Guid.NewGuid():N}.json"),
@@ -342,7 +491,34 @@ public sealed class AppBApiTests
                         "test-sha",
                         "test-project"),
                     LogOutput));
+                if (tokenVerifier is not null)
+                {
+                    services.RemoveAll<IGoogleIdTokenVerifier>();
+                    services.AddSingleton(tokenVerifier);
+                }
             });
+        }
+    }
+
+    private sealed class StubGoogleIdTokenVerifier(
+        GoogleIdTokenVerificationResult result) : IGoogleIdTokenVerifier
+    {
+        public int CallCount { get; private set; }
+
+        public string? LastToken { get; private set; }
+
+        public string? LastAudience { get; private set; }
+
+        public Task<GoogleIdTokenVerificationResult> VerifyAsync(
+            string token,
+            string audience,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CallCount++;
+            LastToken = token;
+            LastAudience = audience;
+            return Task.FromResult(result);
         }
     }
 }

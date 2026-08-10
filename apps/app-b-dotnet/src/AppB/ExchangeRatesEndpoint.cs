@@ -8,12 +8,32 @@ public static class ExchangeRatesEndpoint
         HttpContext context,
         ExchangeRateProvider exchangeRateProvider,
         IFaultSettingsProvider faultSettingsProvider,
+        IAppBRequestAuthenticator authenticator,
         StructuredLogWriter logger)
     {
         var started = Stopwatch.GetTimestamp();
         var requestContext = RequestContext.Create(context, null);
         var logType = requestContext.IsDependencyProbe ? "dependency_probe" : "request";
         context.Response.Headers.CacheControl = "no-store";
+
+        var authentication = await authenticator.AuthenticateAsync(
+            context.Request,
+            context.RequestAborted);
+        if (!authentication.Succeeded)
+        {
+            logger.WriteRequest(
+                "WARNING",
+                "caller authentication rejected",
+                logType,
+                requestContext,
+                StatusCodes.Status401Unauthorized,
+                ElapsedMilliseconds(started),
+                "AUTH_REJECTED",
+                authentication.ErrorType);
+
+            context.Response.Headers.WWWAuthenticate = "Bearer";
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+        }
 
         if (requestContext.Errors.Count > 0)
         {

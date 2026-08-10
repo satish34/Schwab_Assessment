@@ -6,7 +6,11 @@ services:
     build:
       context: ./apps/app-b-dotnet
     environment:
+      ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://0.0.0.0:8080
+      APP_A_IDENTITY_EMAIL: currency-app-a-caller@${PROJECT_ID:-schwab-assessment-gke}.iam.gserviceaccount.com
+      APP_B_AUTH_MODE: disabled
+      APP_B_TOKEN_AUDIENCE: https://app-b-engine.schwab-assessment.internal
       FAULT_CONFIG_PATH: /etc/app-b-faults/faults.json
       GOOGLE_CLOUD_PROJECT: ${PROJECT_ID:-schwab-assessment-gke}
       SERVICE_CLUSTER: local-compose
@@ -55,8 +59,11 @@ services:
       app-b-engine:
         condition: service_healthy
     environment:
+      APP_B_AUTH_MODE: disabled
       APP_B_BASE_URL: http://app-b-engine:8080
+      APP_B_TOKEN_AUDIENCE: https://app-b-engine.schwab-assessment.internal
       GOOGLE_CLOUD_PROJECT: ${PROJECT_ID:-schwab-assessment-gke}
+      SPRING_PROFILES_ACTIVE: local
       SERVICE_CLUSTER: local-compose
       SERVICE_REGION: us-central1
       SERVICE_VERSION: ${SERVICE_VERSION:?SERVICE_VERSION is required}
