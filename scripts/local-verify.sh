@@ -6,7 +6,7 @@ runtime_dir="$repo_root/.tmp/local-integration"
 fault_dir="$runtime_dir/faults"
 fault_file="$fault_dir/faults.json"
 compose_env="$runtime_dir/compose.env"
-request_file="$repo_root/testdata/request.json"
+expected_response_file="$repo_root/testdata/expected-exchange-rates.json"
 project_id="${PROJECT_ID:-schwab-assessment-gke}"
 work_dir=""
 fault_active=0
@@ -46,10 +46,19 @@ done
 docker info >/dev/null 2>&1 || fail "Docker Desktop is not running"
 [[ -f "$compose_env" ]] || fail "run scripts/local-up.sh first"
 [[ -f "$fault_file" ]] || fail "generated fault configuration is missing"
-[[ -f "$request_file" ]] || fail "canonical request fixture is missing"
+[[ -f "$expected_response_file" ]] || fail "expected exchange-rate fixture is missing"
 expected_service_version="$(awk -F= '$1 == "SERVICE_VERSION" {print $2}' "$compose_env" | tr -d '\r' | tail -n 1)"
-[[ "$expected_service_version" =~ ^[0-9a-f]{40}$ ]] \
-  || fail "the local stack does not record a full Git SHA"
+[[ "$expected_service_version" =~ ^([0-9a-f]{40}|local-[0-9a-f]{12}-dirty)$ ]] \
+  || fail "the local stack does not record an honest source version"
+current_head="$(git -C "$repo_root" rev-parse HEAD)"
+[[ "$current_head" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve the current Git HEAD"
+if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]]; then
+  current_source_version="local-${current_head:0:12}-dirty"
+else
+  current_source_version="$current_head"
+fi
+[[ "$expected_service_version" == "$current_source_version" ]] \
+  || fail "the local stack source version is stale; rerun scripts/local-up.sh"
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/schwab-assessment-local.XXXXXX")"
 cd "$repo_root"
@@ -63,11 +72,17 @@ app_b_id="$(compose ps --quiet app-b-engine | tr -d '\r')"
 [[ -n "$app_a_id" && -n "$app_b_id" ]] || fail "both Compose services must be running"
 
 for container_id in "$app_a_id" "$app_b_id"; do
-  docker inspect "$container_id" | jq -e --arg version "SERVICE_VERSION=$expected_service_version" '
+  docker inspect "$container_id" | jq -e \
+    --arg version "SERVICE_VERSION=$expected_service_version" \
+    --arg region "SERVICE_REGION=us-central1" \
+    --arg cluster "SERVICE_CLUSTER=local-compose" '
     .[0].State.Running == true and
     .[0].State.Health.Status == "healthy" and
     .[0].Config.User == "10001:10001" and
     (.[0].Config.Env | index($version)) != null and
+    (.[0].Config.Env | index($region)) != null and
+    (.[0].Config.Env | index($cluster)) != null and
+    ([.[0].Config.Env[] | select(startswith("RISK_REGION=") or startswith("RISK_CLUSTER="))] | length) == 0 and
     .[0].HostConfig.ReadonlyRootfs == true and
     (.[0].HostConfig.CapDrop | index("ALL")) != null and
     (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true")) != null
@@ -82,6 +97,46 @@ binding="$(compose port app-a-gateway 8080 | tr -d '\r' | tail -n 1)"
 host_port="${binding##*:}"
 [[ "$host_port" =~ ^[0-9]+$ ]] || fail "could not resolve App A's random host port"
 base_url="http://127.0.0.1:$host_port"
+
+header_value() {
+  local headers_file="$1"
+  local header_name="$2"
+  tr -d '\r' <"$headers_file" \
+    | awk -F ': ' -v expected="${header_name,,}" 'tolower($1) == expected {print $2}' \
+    | tail -n 1
+}
+
+header_count() {
+  local headers_file="$1"
+  local header_name="$2"
+  tr -d '\r' <"$headers_file" \
+    | awk -F ': ' -v expected="${header_name,,}" 'tolower($1) == expected {count++} END {print count + 0}'
+}
+
+assert_exchange_rates() {
+  local response_file="$1"
+  local expected_region="$2"
+  local expected_cluster="$3"
+  local expected_version="$4"
+  jq -e \
+    --slurpfile expected "$expected_response_file" \
+    --arg region "$expected_region" \
+    --arg cluster "$expected_cluster" \
+    --arg version "$expected_version" '
+      (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
+      (.rateSnapshots | length == 10) and
+      all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
+      (.providedBy | keys == ["cluster", "region", "service", "version"]) and
+      .baseCurrency == $expected[0].baseCurrency and
+      .rateSnapshots == $expected[0].rateSnapshots and
+      .disclaimer == $expected[0].disclaimer and
+      .providedBy.service == $expected[0].providedBy.service and
+      .providedBy.region == $region and
+      .providedBy.cluster == $cluster and
+      .providedBy.version == $version
+    ' "$response_file" >/dev/null \
+    || fail "exchange-rate response does not match the frozen contract"
+}
 
 assert_app_b_health() {
   local path="$1"
@@ -143,6 +198,36 @@ assert_app_b_health /health/live
 assert_app_b_health /health/ready
 wait_for_cell HEALTHY 200 45
 
+ui_headers="$work_dir/ui-headers.txt"
+ui_status="$(curl --silent --show-error --max-time 5 \
+  --dump-header "$ui_headers" \
+  --output "$work_dir/index.html" \
+  --write-out '%{http_code}' "$base_url/")"
+[[ "$ui_status" == "200" ]] || fail "App A UI returned HTTP $ui_status"
+[[ "$(header_value "$ui_headers" content-type)" == text/html* ]] \
+  || fail "App A UI did not return text/html"
+[[ "$(header_value "$ui_headers" cache-control)" == "no-store" ]] \
+  || fail "App A UI did not return Cache-Control: no-store"
+for marker in \
+  'id="exchange-rate-app"' \
+  'data-api-endpoint="/api/exchange-rates"' \
+  'data-snapshot-count="10"' \
+  'id="sample-position"' \
+  'payload.rateSnapshots.length !== 10' \
+  'let sampleIndex = -1' \
+  'if (advanceSample || sampleIndex < 0)' \
+  'sampleIndex = (sampleIndex + 1) % payload.rateSnapshots.length' \
+  'cache: "no-store"' \
+  'loadRates(true)' \
+  'loadRates(false)' \
+  'Synthetic demonstration rates - not for financial use.' \
+  'data-currency="EUR"' \
+  'data-currency="GBP"' \
+  'data-currency="JPY"'; do
+  grep -F -q -- "$marker" "$work_dir/index.html" \
+    || fail "App A UI is missing marker: $marker"
+done
+
 for attempt in 1 2; do
   response="$work_dir/response-$attempt.json"
   headers="$work_dir/headers-$attempt.txt"
@@ -150,22 +235,17 @@ for attempt in 1 2; do
     --dump-header "$headers" \
     --output "$response" \
     --write-out '%{http_code}' \
-    --request POST "$base_url/v1/risk" \
-    --header 'Content-Type: application/json' \
+    --request GET "$base_url/api/exchange-rates" \
     --header "x-correlation-id: $correlation_id" \
-    --header "traceparent: $traceparent" \
-    --data-binary "@$request_file")"
-  [[ "$status" == "200" ]] || fail "deterministic request $attempt returned HTTP $status"
-  jq -e --arg version "$expected_service_version" '
-    .requestId == "550e8400-e29b-41d4-a716-446655440000" and
-    .score == 48 and
-    .decision == "REVIEW" and
-    .rulesFired == ["CARD_NOT_PRESENT", "AMOUNT_OVER_1000"] and
-    .evaluatedBy.service == "app-b-engine" and
-    .evaluatedBy.region == "us-central1" and
-    .evaluatedBy.cluster == "local-compose" and
-    .evaluatedBy.version == $version
-  ' "$response" >/dev/null || fail "response $attempt does not match the frozen contract"
+    --header "traceparent: $traceparent")"
+  [[ "$status" == "200" ]] || fail "exchange-rate request $attempt returned HTTP $status"
+  assert_exchange_rates "$response" us-central1 local-compose "$expected_service_version"
+  [[ "$(header_value "$headers" content-type)" == application/json* ]] \
+    || fail "exchange-rate response $attempt did not return application/json"
+  [[ "$(header_value "$headers" cache-control)" == "no-store" ]] \
+    || fail "exchange-rate response $attempt did not return Cache-Control: no-store"
+  [[ "$(header_count "$headers" cache-control)" == "1" ]] \
+    || fail "exchange-rate response $attempt returned duplicate Cache-Control headers"
 
   returned_correlation="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="x-correlation-id" {print $2}' | tail -n 1)"
   returned_traceparent="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="traceparent" {print $2}' | tail -n 1)"
@@ -178,7 +258,24 @@ done
 jq -S -c . "$work_dir/response-1.json" >"$work_dir/response-1.canonical"
 jq -S -c . "$work_dir/response-2.json" >"$work_dir/response-2.canonical"
 cmp -s "$work_dir/response-1.canonical" "$work_dir/response-2.canonical" \
-  || fail "the same request produced different decisions"
+  || fail "repeated exchange-rate requests produced different responses"
+
+generated_headers="$work_dir/generated-headers.txt"
+generated_status="$(curl --silent --show-error --max-time 5 \
+  --dump-header "$generated_headers" \
+  --output "$work_dir/generated-response.json" \
+  --write-out '%{http_code}' \
+  --request GET "$base_url/api/exchange-rates")"
+[[ "$generated_status" == "200" ]] \
+  || fail "header-generation request returned HTTP $generated_status"
+assert_exchange_rates "$work_dir/generated-response.json" \
+  us-central1 local-compose "$expected_service_version"
+generated_correlation="$(header_value "$generated_headers" x-correlation-id)"
+generated_traceparent="$(header_value "$generated_headers" traceparent)"
+[[ "$generated_correlation" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] \
+  || fail "App A did not generate a valid correlation ID"
+[[ "$generated_traceparent" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f]$ ]] \
+  || fail "App A did not generate valid trace context"
 
 wait_for_request_logs() {
   local deadline=$((SECONDS + 15))
@@ -191,14 +288,20 @@ wait_for_request_logs() {
     if jq -e --arg correlation "$correlation_id" --arg trace "$trace_id" '
          select(.service? == "app-a-gateway" and
                 .log_type == "request" and
+                .route == "/api/exchange-rates" and
+                .method == "GET" and
                 .status_code == 200 and
+                .decision == "RATES_RETURNED" and
                 .correlation_id == $correlation and
                 .trace_id == $trace)
        ' "$app_a_log" >/dev/null 2>&1 \
       && jq -e --arg correlation "$correlation_id" --arg trace "$trace_id" '
          select(.service? == "app-b-engine" and
                 .log_type == "request" and
+                .route == "/internal/exchange-rates" and
+                .method == "GET" and
                 .status_code == 200 and
+                .decision == "RATES_RETURNED" and
                 .correlation_id == $correlation and
                 .trace_id == $trace)
        ' "$app_b_log" >/dev/null 2>&1; then
@@ -226,18 +329,26 @@ assert_app_a_health /health/ready
 assert_app_b_health /health/live
 assert_app_b_health /health/ready
 
+fault_headers="$work_dir/fault-headers.txt"
 fault_status="$(curl --silent --show-error --max-time 5 \
+  --dump-header "$fault_headers" \
   --output "$work_dir/fault-response.json" \
   --write-out '%{http_code}' \
-  --request POST "$base_url/v1/risk" \
-  --header 'Content-Type: application/json' \
+  --request GET "$base_url/api/exchange-rates" \
   --header "x-correlation-id: $fault_correlation" \
-  --header "traceparent: $fault_traceparent" \
-  --data-binary "@$request_file")"
+  --header "traceparent: $fault_traceparent")"
 [[ "$fault_status" == "503" ]] || fail "faulted dependency returned HTTP $fault_status instead of 503"
+[[ "$(header_value "$fault_headers" cache-control)" == "no-store" ]] \
+  || fail "faulted dependency did not return Cache-Control: no-store"
+[[ "$(header_count "$fault_headers" cache-control)" == "1" ]] \
+  || fail "faulted dependency returned duplicate Cache-Control headers"
+[[ "$(header_value "$fault_headers" x-correlation-id)" == "$fault_correlation" ]] \
+  || fail "faulted dependency did not preserve the correlation ID"
+[[ "$(header_value "$fault_headers" traceparent)" == "$fault_traceparent" ]] \
+  || fail "faulted dependency did not preserve the trace context"
 jq -e '
   .error == "DEPENDENCY_UNAVAILABLE" and
-  .message == "Risk evaluation is temporarily unavailable"
+  .message == "Exchange rates are temporarily unavailable"
 ' "$work_dir/fault-response.json" >/dev/null \
   || fail "App A leaked or changed the bounded dependency error"
 
@@ -248,12 +359,11 @@ wait_for_cell HEALTHY 200 75
 recovery_status="$(curl --silent --show-error --max-time 5 \
   --output "$work_dir/recovery-response.json" \
   --write-out '%{http_code}' \
-  --request POST "$base_url/v1/risk" \
-  --header 'Content-Type: application/json' \
+  --request GET "$base_url/api/exchange-rates" \
   --header "x-correlation-id: $correlation_id" \
-  --header "traceparent: $traceparent" \
-  --data-binary "@$request_file")"
+  --header "traceparent: $traceparent")"
 [[ "$recovery_status" == "200" ]] || fail "request path did not recover after the fault"
+assert_exchange_rates "$work_dir/recovery-response.json" us-central1 local-compose "$expected_service_version"
 
 docker logs "$app_a_id" >"$work_dir/app-a.log" 2>&1
 docker logs "$app_b_id" >"$work_dir/app-b.log" 2>&1
@@ -274,7 +384,7 @@ validate_service_logs() {
     any($events[]; .log_type == "schema_seed") and
     all($events[];
       . as $event |
-      (($required - ($event | keys)) | length) == 0 and
+      (($event | keys) == ($required | sort)) and
       ((.severity | type) == "string") and
       ((.message | type) == "string") and
       (["schema_seed", "request", "dependency_probe", "lifecycle"] | index($event.log_type)) != null and
@@ -316,22 +426,47 @@ for service_log in "$work_dir/app-a.log" "$work_dir/app-b.log"; do
     || fail "request correlation/trace fields do not match across services"
 done
 
-for service_log in "$work_dir/app-a.log" "$work_dir/app-b.log"; do
-  jq -e \
-    --arg correlation "$fault_correlation" \
-    --arg trace "$fault_trace_id" '
-      select((.log_type? == "request") and
-             (.status_code >= 500) and
-             (.correlation_id == $correlation) and
-             (.trace_id == $trace))
-    ' "$service_log" >/dev/null \
-    || fail "the bounded fault was not traceable in both service logs"
-done
+jq -e \
+  --arg correlation "$fault_correlation" \
+  --arg trace "$fault_trace_id" '
+    select((.log_type? == "request") and
+           (.status_code >= 500) and
+           (.correlation_id == $correlation) and
+           (.trace_id == $trace))
+  ' "$work_dir/app-a.log" >/dev/null \
+  || fail "the bounded public fault was not traceable in App A logs"
+
+# Once the cell is unhealthy, App A may correctly reject the explicit request
+# from its open circuit without calling App B. Prove cross-service fault
+# traceability with any matching request or dependency-probe pair from this
+# fresh-container run instead of requiring that circuit-short-circuited call in
+# App B.
+jq -n -e \
+  --slurpfile app_a "$work_dir/app-a.log" \
+  --slurpfile app_b "$work_dir/app-b.log" '
+    [
+      $app_a[]
+      | select(
+          (.log_type == "request" or .log_type == "dependency_probe")
+          and .status_code >= 500)
+      | [.correlation_id, .trace_id]
+    ] as $app_a_pairs
+    | [
+        $app_b[]
+        | select(
+            (.log_type == "request" or .log_type == "dependency_probe")
+            and .status_code >= 500)
+        | [.correlation_id, .trace_id]
+      ] as $app_b_pairs
+    | any($app_a_pairs[]; . as $pair | any($app_b_pairs[]; . == $pair))
+  ' >/dev/null \
+  || fail "no faulted App A/App B log pair shared correlation and trace IDs"
 
 printf 'Local integration verification passed.\n'
 printf 'Endpoint: %s\n' "$base_url"
 printf 'Service version: %s\n' "$expected_service_version"
-printf 'Deterministic result: score=48 decision=REVIEW\n'
+printf 'Deterministic catalog: 10 snapshots; sample 1 USD EUR=0.92 GBP=0.78 JPY=149.50\n'
+printf 'Log decision: RATES_RETURNED\n'
 printf 'Correlation ID: %s\n' "$correlation_id"
 printf 'Trace ID: %s\n' "$trace_id"
 printf 'Cell path: HEALTHY -> UNHEALTHY -> HEALTHY\n'

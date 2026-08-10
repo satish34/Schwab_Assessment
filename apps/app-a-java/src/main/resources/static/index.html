@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-store">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231267d6'/%3E%3Cpath d='M16 24h30l-7-7m9 23H18l7 7' fill='none' stroke='white' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <title>Demo Currency Rate Board</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #172334;
+        --muted: #607086;
+        --line: #dce4ee;
+        --panel: rgba(255, 255, 255, 0.92);
+        --blue: #1267d6;
+        --blue-deep: #084caa;
+        --accent: #31c2a6;
+        --warning-bg: #fff8df;
+        --warning-ink: #674d00;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background:
+          radial-gradient(circle at 15% 15%, rgba(49, 194, 166, 0.18), transparent 32rem),
+          radial-gradient(circle at 90% 5%, rgba(18, 103, 214, 0.2), transparent 34rem),
+          #f4f7fb;
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(960px, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: clamp(2.5rem, 8vw, 6rem) 0;
+      }
+
+      .eyebrow {
+        margin: 0 0 0.75rem;
+        color: var(--blue-deep);
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin: 0;
+        font-size: clamp(2.25rem, 7vw, 4.9rem);
+        line-height: 0.98;
+        letter-spacing: -0.055em;
+      }
+
+      .intro {
+        max-width: 690px;
+        margin: 1.3rem 0 1.6rem;
+        color: var(--muted);
+        font-size: clamp(1rem, 2.5vw, 1.18rem);
+        line-height: 1.65;
+      }
+
+      .notice {
+        display: inline-flex;
+        gap: 0.65rem;
+        align-items: center;
+        margin-bottom: 1.25rem;
+        padding: 0.8rem 1rem;
+        border: 1px solid #f1d67c;
+        border-radius: 999px;
+        background: var(--warning-bg);
+        color: var(--warning-ink);
+        font-size: 0.9rem;
+      }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        border-radius: 1.5rem;
+        background: var(--panel);
+        box-shadow: 0 24px 80px rgba(35, 56, 85, 0.14);
+        backdrop-filter: blur(18px);
+      }
+
+      .panel-header,
+      .panel-footer {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1.15rem 1.35rem;
+      }
+
+      .panel-header {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .base {
+        font-weight: 750;
+      }
+
+      .rate-heading {
+        display: flex;
+        gap: 0.75rem;
+        align-items: baseline;
+      }
+
+      .sample {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .status {
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .status[data-state="error"] {
+        color: #a42a2a;
+      }
+
+      .rate-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .rate {
+        min-height: 190px;
+        padding: clamp(1.25rem, 4vw, 2rem);
+        border-right: 1px solid var(--line);
+      }
+
+      .rate:last-child {
+        border-right: 0;
+      }
+
+      .currency {
+        display: block;
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+      }
+
+      .value {
+        display: block;
+        margin: 1.6rem 0 0.35rem;
+        font-size: clamp(2rem, 6vw, 3.3rem);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.05em;
+      }
+
+      .unit {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .panel-footer {
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 0.68rem 1rem;
+        background: var(--blue);
+        color: white;
+        font: inherit;
+        font-size: 0.85rem;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--blue-deep);
+      }
+
+      button:focus-visible {
+        outline: 3px solid rgba(18, 103, 214, 0.3);
+        outline-offset: 3px;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      @media (max-width: 680px) {
+        .notice {
+          align-items: flex-start;
+          border-radius: 1rem;
+        }
+
+        .rate-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .rate {
+          min-height: 145px;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .rate:last-child {
+          border-bottom: 0;
+        }
+
+        .panel-footer {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main
+      id="exchange-rate-app"
+      data-api-endpoint="/api/exchange-rates"
+      data-snapshot-count="10">
+      <p class="eyebrow">Multi-region service demonstration</p>
+      <h1>Demo Currency Rate Board</h1>
+      <p class="intro">
+        Browse ten synthetic USD rate snapshots served from one of two cloud regions.
+        Refresh to see the next snapshot.
+      </p>
+
+      <div class="notice" role="note">
+        <span aria-hidden="true">&#9432;</span>
+        <strong>Synthetic demonstration rates - not for financial use.</strong>
+      </div>
+
+      <section class="panel" aria-labelledby="rates-title">
+        <div class="panel-header">
+          <div class="rate-heading">
+            <span class="base" id="rates-title">1 <span id="base-currency">--</span></span>
+            <span class="sample" id="sample-position">Sample -- of 10</span>
+          </div>
+          <span class="status" id="status" role="status" aria-live="polite">Loading rates...</span>
+        </div>
+
+        <div class="rate-grid" id="rates" aria-live="polite">
+          <article class="rate" data-currency="EUR">
+            <span class="currency">EUR</span>
+            <strong class="value" id="rate-EUR">--</strong>
+            <span class="unit">euros</span>
+          </article>
+          <article class="rate" data-currency="GBP">
+            <span class="currency">GBP</span>
+            <strong class="value" id="rate-GBP">--</strong>
+            <span class="unit">pounds sterling</span>
+          </article>
+          <article class="rate" data-currency="JPY">
+            <span class="currency">JPY</span>
+            <strong class="value" id="rate-JPY">--</strong>
+            <span class="unit">yen</span>
+          </article>
+        </div>
+
+        <div class="panel-footer">
+          <span id="provider">Waiting for service metadata</span>
+          <button id="refresh" type="button">Refresh rates</button>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const app = document.getElementById("exchange-rate-app");
+      const endpoint = app.dataset.apiEndpoint;
+      const status = document.getElementById("status");
+      const refresh = document.getElementById("refresh");
+      const currencies = ["EUR", "GBP", "JPY"];
+      let sampleIndex = -1;
+
+      function clearDisplayedRates() {
+        document.getElementById("base-currency").textContent = "--";
+        document.getElementById("sample-position").textContent = "Sample -- of 10";
+        for (const currency of currencies) {
+          document.getElementById(`rate-${currency}`).textContent = "--";
+        }
+        document.getElementById("provider").textContent = "Waiting for service metadata";
+      }
+
+      async function loadRates(advanceSample = false) {
+        status.textContent = "Loading rates...";
+        status.dataset.state = "loading";
+        refresh.disabled = true;
+        clearDisplayedRates();
+
+        try {
+          const response = await fetch(endpoint, {
+            method: "GET",
+            cache: "no-store"
+          });
+          if (!response.ok) {
+            throw new Error(`Service returned HTTP ${response.status}`);
+          }
+
+          const payload = await response.json();
+          if (!Array.isArray(payload.rateSnapshots) || payload.rateSnapshots.length !== 10) {
+            throw new Error("Service returned an invalid snapshot catalog");
+          }
+
+          if (advanceSample || sampleIndex < 0) {
+            sampleIndex = (sampleIndex + 1) % payload.rateSnapshots.length;
+          }
+          const rates = payload.rateSnapshots[sampleIndex];
+          document.getElementById("base-currency").textContent = payload.baseCurrency;
+          document.getElementById("sample-position").textContent =
+            `Sample ${sampleIndex + 1} of ${payload.rateSnapshots.length}`;
+          for (const currency of currencies) {
+            document.getElementById(`rate-${currency}`).textContent =
+              Number(rates[currency]).toFixed(2);
+          }
+
+          const source = payload.providedBy;
+          document.getElementById("provider").textContent =
+            `${source.service} | ${source.region} | ${source.cluster} | ${source.version}`;
+          status.textContent = "Rates loaded";
+          status.dataset.state = "ready";
+        } catch (error) {
+          status.textContent = "Rates are temporarily unavailable";
+          status.dataset.state = "error";
+          document.getElementById("provider").textContent = "Please try again shortly";
+        } finally {
+          refresh.disabled = false;
+        }
+      }
+
+      refresh.addEventListener("click", () => loadRates(true));
+      loadRates(false);
+    </script>
+  </body>
+</html>

@@ -12,6 +12,7 @@ public sealed partial record RequestContext(
     public static RequestContext Create(HttpContext context, string? fallbackCorrelationId)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        ValidateNoInput(context, errors);
         var correlationId = ResolveCorrelationId(context, fallbackCorrelationId, errors);
         var traceId = ResolveTraceId(context, errors);
         var isProbe = string.Equals(
@@ -20,6 +21,22 @@ public sealed partial record RequestContext(
             StringComparison.OrdinalIgnoreCase);
 
         return new RequestContext(correlationId, traceId, isProbe, errors);
+    }
+
+    private static void ValidateNoInput(
+        HttpContext context,
+        IDictionary<string, string[]> errors)
+    {
+        if (context.Request.QueryString.HasValue)
+        {
+            errors["query"] = ["Query input is not allowed."];
+        }
+
+        if (context.Request.ContentLength is > 0 ||
+            context.Request.Headers.TransferEncoding.Count > 0)
+        {
+            errors["body"] = ["Request body input is not allowed."];
+        }
     }
 
     private static string ResolveCorrelationId(

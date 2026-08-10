@@ -26,7 +26,7 @@ public sealed class FaultSettingsProvider : BackgroundService, IFaultSettingsPro
 
     public FaultSettingsProvider(IConfiguration configuration, StructuredLogWriter logger)
     {
-        _path = configuration["FAULT_CONFIG_PATH"] ?? "/etc/risk-faults/faults.json";
+        _path = configuration["FAULT_CONFIG_PATH"] ?? "/etc/app-b-faults/faults.json";
         _logger = logger;
         _current = LoadInitial(_path);
     }
@@ -62,7 +62,7 @@ public sealed class FaultSettingsProvider : BackgroundService, IFaultSettingsPro
         return new FaultSettings(file.InjectedLatencyMs.Value, file.InjectedErrorRate.Value);
     }
 
-    public static bool ShouldInjectFailure(Guid requestId, double errorRate)
+    public static bool ShouldInjectFailure(string sampleKey, double errorRate)
     {
         if (errorRate <= 0.0)
         {
@@ -74,7 +74,8 @@ public sealed class FaultSettingsProvider : BackgroundService, IFaultSettingsPro
             return true;
         }
 
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(requestId.ToString("D")));
+        ArgumentException.ThrowIfNullOrWhiteSpace(sampleKey);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sampleKey));
         var sample = BinaryPrimitives.ReadUInt64BigEndian(hash) / (double)ulong.MaxValue;
         return sample < errorRate;
     }

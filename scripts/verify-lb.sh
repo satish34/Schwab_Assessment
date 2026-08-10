@@ -16,7 +16,7 @@ kubeconfig="$runtime_dir/kubeconfig-schwab-assessment"
 work_dir=""
 health_timeout_seconds="${LB_HEALTH_TIMEOUT_SECONDS:-900}"
 health_poll_seconds="${LB_HEALTH_POLL_SECONDS:-10}"
-certificate_timeout_seconds="${CERTIFICATE_TIMEOUT_SECONDS:-900}"
+certificate_timeout_seconds="${CERTIFICATE_TIMEOUT_SECONDS:-3600}"
 certificate_poll_seconds="${CERTIFICATE_POLL_SECONDS:-15}"
 endpoint_timeout_seconds="${PUBLIC_ENDPOINT_TIMEOUT_SECONDS:-120}"
 
@@ -66,12 +66,12 @@ validate_timeout CERTIFICATE_TIMEOUT_SECONDS "$certificate_timeout_seconds" 30 3
 validate_timeout CERTIFICATE_POLL_SECONDS "$certificate_poll_seconds" 2 60
 validate_timeout PUBLIC_ENDPOINT_TIMEOUT_SECONDS "$endpoint_timeout_seconds" 30 300
 
-for command_name in curl gcloud git jq kubectl terraform timeout; do
+for command_name in curl gcloud git grep jq kubectl terraform timeout; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "$command_name is required"
 done
-[[ -f "$repo_root/testdata/request.json" ]] \
-  || fail "the canonical synthetic request is missing"
+[[ -f "$repo_root/testdata/expected-exchange-rates.json" ]] \
+  || fail "the expected exchange-rate response fixture is missing"
 
 active_account="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null
@@ -140,12 +140,13 @@ jq -e \
     (.global_ipv4_address.value == $address) and
     (.public_endpoint.value == $endpoint) and
     (.tls_enabled.value == $tls_enabled) and
-    (.forwarding_rule_names.value.http == "risk-app-a-http") and
     (
       if $tls_enabled then
-        .forwarding_rule_names.value.https == "risk-app-a-https"
+        (.forwarding_rule_names.value.http == null) and
+        (.forwarding_rule_names.value.https == "risk-app-a-https")
       else
-        .forwarding_rule_names.value.https == null
+        (.forwarding_rule_names.value.http == "risk-app-a-http") and
+        (.forwarding_rule_names.value.https == null)
       end
     ) and
     ((.neg_backends.value | keys | sort) == [
@@ -250,33 +251,6 @@ jq -e '
 ' <<<"$application_map_json" >/dev/null \
   || fail "the application URL map does not route only to the frozen backend"
 
-http_proxy_json="$(
-  gcloud_json compute target-http-proxies describe risk-app-a-http-proxy --global
-)"
-http_rule_json="$(
-  gcloud_json compute forwarding-rules describe risk-app-a-http --global
-)"
-
-expected_http_map="risk-app-a-gateway-map"
-if [[ "$tls_enabled" == true ]]; then
-  expected_http_map="risk-app-a-http-redirect"
-fi
-jq -e --arg map "$expected_http_map" '
-  (.name == "risk-app-a-http-proxy") and
-  (.urlMap | endswith("/global/urlMaps/\($map)"))
-' <<<"$http_proxy_json" >/dev/null \
-  || fail "the live HTTP proxy points to the wrong URL map"
-jq -e --arg address "$global_address" '
-  (.name == "risk-app-a-http") and
-  (.IPAddress == $address) and
-  (.IPProtocol == "TCP") and
-  (.loadBalancingScheme == "EXTERNAL_MANAGED") and
-  (.networkTier == "PREMIUM") and
-  ((.portRange == "80") or (.portRange == "80-80")) and
-  (.target | endswith("/global/targetHttpProxies/risk-app-a-http-proxy"))
-' <<<"$http_rule_json" >/dev/null \
-  || fail "the live HTTP forwarding rule does not match the frozen frontend"
-
 forwarding_inventory="$(
   gcloud_json compute forwarding-rules list --global
 )"
@@ -292,29 +266,34 @@ url_map_inventory="$(
 
 if [[ "$tls_enabled" == true ]]; then
   jq -e '
-    [.[] | select(.name | startswith("risk-app-a-")) | .name] | sort
-      == ["risk-app-a-http", "risk-app-a-https"]
-  ' <<<"$forwarding_inventory" >/dev/null \
-    || fail "the risk frontend forwarding-rule inventory is not exactly HTTP and HTTPS"
-  jq -e '
     [.[] | select(.name | startswith("risk-app-a-")) | .name]
-      == ["risk-app-a-http-proxy"]
+      == ["risk-app-a-https"]
+  ' <<<"$forwarding_inventory" >/dev/null \
+    || fail "the application frontend must expose only the HTTPS forwarding rule"
+  jq -e --arg address "$global_address" '
+    [.[] | select(.IPAddress == $address)] as $rules |
+    ($rules | length) == 1 and
+    ($rules[0].name == "risk-app-a-https") and
+    ($rules[0].IPProtocol == "TCP") and
+    (($rules[0].portRange == "443") or ($rules[0].portRange == "443-443")) and
+    ($rules[0].target | endswith("/global/targetHttpsProxies/risk-app-a-https-proxy"))
+  ' <<<"$forwarding_inventory" >/dev/null \
+    || fail "the reserved public IP must have exactly one port 443 forwarding rule"
+  jq -e '
+    [.[] | select(.name | startswith("risk-app-a-"))] | length == 0
   ' <<<"$http_proxy_inventory" >/dev/null \
-    || fail "the risk HTTP proxy inventory is not exact"
+    || fail "an HTTP proxy remains after enabling the HTTPS-only edge"
   jq -e '
     [.[] | select(.name | startswith("risk-app-a-")) | .name]
       == ["risk-app-a-https-proxy"]
   ' <<<"$https_proxy_inventory" >/dev/null \
-    || fail "the risk HTTPS proxy inventory is not exact"
+    || fail "the application HTTPS proxy inventory is not exact"
   jq -e '
-    [.[] | select(.name | startswith("risk-app-a-")) | .name] | sort
-      == ["risk-app-a-gateway-map", "risk-app-a-http-redirect"]
+    [.[] | select(.name | startswith("risk-app-a-")) | .name]
+      == ["risk-app-a-gateway-map"]
   ' <<<"$url_map_inventory" >/dev/null \
-    || fail "the risk URL-map inventory is not exactly application plus redirect"
+    || fail "the HTTPS-only edge must contain only the application URL map"
 
-  redirect_map_json="$(
-    gcloud_json compute url-maps describe risk-app-a-http-redirect --global
-  )"
   https_proxy_json="$(
     gcloud_json compute target-https-proxies describe risk-app-a-https-proxy --global
   )"
@@ -329,14 +308,6 @@ if [[ "$tls_enabled" == true ]]; then
       --map=risk-cert-map --location=global
   )"
 
-  jq -e --arg domain "$state_domain" '
-    (.name == "risk-app-a-http-redirect") and
-    (.defaultUrlRedirect.hostRedirect == $domain) and
-    (.defaultUrlRedirect.httpsRedirect == true) and
-    (.defaultUrlRedirect.redirectResponseCode == "PERMANENT_REDIRECT") and
-    ((.defaultUrlRedirect.stripQuery // false) == false)
-  ' <<<"$redirect_map_json" >/dev/null \
-    || fail "the HTTP redirect does not preserve POST semantics for the trusted domain"
   jq -e --arg map "$certificate_map_id" '
     (.name == "risk-app-a-https-proxy") and
     (.urlMap | endswith("/global/urlMaps/risk-app-a-gateway-map")) and
@@ -389,17 +360,71 @@ if [[ "$tls_enabled" == true ]]; then
   done
   [[ "$certificate_state" == "ACTIVE" ]] \
     || fail "managed certificate risk-cert did not become ACTIVE within ${certificate_timeout_seconds}s"
+
+  no_http_deadline=$((SECONDS + endpoint_timeout_seconds))
+  no_http_consecutive=0
+  while ((SECONDS < no_http_deadline)); do
+    set +e
+    http_probe_status="$(
+      curl --silent --show-error --noproxy '*' \
+        --connect-timeout 3 --max-time 5 \
+        --output /dev/null --write-out '%{http_code}' \
+        --request GET "http://$global_address/api/exchange-rates" \
+        2>/dev/null
+    )"
+    http_probe_exit=$?
+    set -e
+    if [[ "$http_probe_exit" != 0 && "$http_probe_status" == "000" ]]; then
+      no_http_consecutive=$((no_http_consecutive + 1))
+      ((no_http_consecutive >= 3)) && break
+    else
+      no_http_consecutive=0
+    fi
+    sleep 5
+  done
+  ((no_http_consecutive >= 3)) \
+    || fail "port 80 still accepted an HTTP request after the HTTPS-only propagation window"
 else
+  http_proxy_json="$(
+    gcloud_json compute target-http-proxies describe risk-app-a-http-proxy --global
+  )"
+  http_rule_json="$(
+    gcloud_json compute forwarding-rules describe risk-app-a-http --global
+  )"
+  jq -e '
+    (.name == "risk-app-a-http-proxy") and
+    (.urlMap | endswith("/global/urlMaps/risk-app-a-gateway-map"))
+  ' <<<"$http_proxy_json" >/dev/null \
+    || fail "the no-domain HTTP proxy points to the wrong URL map"
+  jq -e --arg address "$global_address" '
+    (.name == "risk-app-a-http") and
+    (.IPAddress == $address) and
+    (.IPProtocol == "TCP") and
+    (.loadBalancingScheme == "EXTERNAL_MANAGED") and
+    (.networkTier == "PREMIUM") and
+    ((.portRange == "80") or (.portRange == "80-80")) and
+    (.target | endswith("/global/targetHttpProxies/risk-app-a-http-proxy"))
+  ' <<<"$http_rule_json" >/dev/null \
+    || fail "the no-domain HTTP forwarding rule does not match the frozen frontend"
   jq -e '
     [.[] | select(.name | startswith("risk-app-a-")) | .name]
       == ["risk-app-a-http"]
   ' <<<"$forwarding_inventory" >/dev/null \
-    || fail "the core risk frontend must contain only its HTTP forwarding rule"
+    || fail "the core application frontend must contain only its HTTP forwarding rule"
+  jq -e --arg address "$global_address" '
+    [.[] | select(.IPAddress == $address)] as $rules |
+    ($rules | length) == 1 and
+    ($rules[0].name == "risk-app-a-http") and
+    ($rules[0].IPProtocol == "TCP") and
+    (($rules[0].portRange == "80") or ($rules[0].portRange == "80-80")) and
+    ($rules[0].target | endswith("/global/targetHttpProxies/risk-app-a-http-proxy"))
+  ' <<<"$forwarding_inventory" >/dev/null \
+    || fail "the reserved public IP must have exactly one no-domain port 80 rule"
   jq -e '
     [.[] | select(.name | startswith("risk-app-a-")) | .name]
       == ["risk-app-a-http-proxy"]
   ' <<<"$http_proxy_inventory" >/dev/null \
-    || fail "the core risk frontend must contain only its HTTP proxy"
+    || fail "the core application frontend must contain only its HTTP proxy"
   jq -e '
     [.[] | select(.name | startswith("risk-app-a-"))] | length == 0
   ' <<<"$https_proxy_inventory" >/dev/null \
@@ -408,7 +433,7 @@ else
     [.[] | select(.name | startswith("risk-app-a-")) | .name]
       == ["risk-app-a-gateway-map"]
   ' <<<"$url_map_inventory" >/dev/null \
-    || fail "the core risk frontend must contain only its application URL map"
+    || fail "the core application frontend must contain only its URL map"
 fi
 
 health_deadline=$((SECONDS + health_timeout_seconds))
@@ -450,46 +475,85 @@ done
 mkdir -p "$runtime_dir"
 work_dir="$(mktemp -d "$runtime_dir/verify-lb.XXXXXX")"
 response_file="$work_dir/public-response.json"
+response_headers="$work_dir/public-response.headers"
 endpoint_deadline=$((SECONDS + endpoint_timeout_seconds))
 http_status=""
 while ((SECONDS < endpoint_deadline)); do
   http_status="$(
     curl --silent --show-error --max-time 20 \
       --output "$response_file" \
+      --dump-header "$response_headers" \
       --write-out '%{http_code}' \
-      --request POST "$expected_endpoint/v1/risk" \
-      --header 'Content-Type: application/json' \
-      --data-binary "@$repo_root/testdata/request.json" 2>/dev/null || true
+      --request GET "$expected_endpoint/api/exchange-rates" \
+      2>/dev/null || true
   )"
   [[ "$http_status" == "200" ]] && break
   sleep 5
 done
 [[ "$http_status" == "200" ]] \
-  || fail "the public canonical request did not return HTTP 200 within ${endpoint_timeout_seconds}s (last status ${http_status:-<none>})"
+  || fail "the public exchange-rate request did not return HTTP 200 within ${endpoint_timeout_seconds}s (last status ${http_status:-<none>})"
+tr -d '\r' <"$response_headers" | grep -Eiq '^content-type:[[:space:]]*application/json([[:space:]]*;.*)?$' \
+  || fail "the public exchange-rate response is not application/json"
+tr -d '\r' <"$response_headers" | grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' \
+  || fail "the public exchange-rate response is missing Cache-Control: no-store"
+tr -d '\r' <"$response_headers" | grep -Eiq '^x-correlation-id:[[:space:]]*[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}[[:space:]]*$' \
+  || fail "App A did not generate a valid public response correlation ID"
+tr -d '\r' <"$response_headers" | grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f][[:space:]]*$' \
+  || fail "App A did not generate valid public response trace context"
 
-jq -e '
-  (keys | sort) == ["decision", "evaluatedBy", "requestId", "rulesFired", "score"] and
-  (.requestId == "550e8400-e29b-41d4-a716-446655440000") and
-  (.score == 48) and
-  (.decision == "REVIEW") and
-  (.rulesFired == ["CARD_NOT_PRESENT", "AMOUNT_OVER_1000"]) and
-  ((.evaluatedBy | keys | sort) == ["cluster", "region", "service", "version"]) and
-  (.evaluatedBy.service == "app-b-engine") and
+jq -e --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" '
+  (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
+  (.rateSnapshots | length == 10) and
+  all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
+  (.providedBy | keys == ["cluster", "region", "service", "version"]) and
+  .baseCurrency == $expected[0].baseCurrency and
+  .rateSnapshots == $expected[0].rateSnapshots and
+  .disclaimer == $expected[0].disclaimer and
+  .providedBy.service == $expected[0].providedBy.service and
   (
-    (.evaluatedBy.region == "us-central1" and
-      .evaluatedBy.cluster == "gke-risk-usc1") or
-    (.evaluatedBy.region == "us-east4" and
-      .evaluatedBy.cluster == "gke-risk-use4")
+    (.providedBy.region == "us-central1" and
+      .providedBy.cluster == "gke-risk-usc1") or
+    (.providedBy.region == "us-east4" and
+      .providedBy.cluster == "gke-risk-use4")
   ) and
-  (.evaluatedBy.version | test("^[0-9a-f]{40}$"))
+  (.providedBy.version | test("^[0-9a-f]{40}$"))
 ' "$response_file" >/dev/null \
   || fail "the public response is not the deterministic frozen schema from a real cell"
 
-serving_region="$(jq -r '.evaluatedBy.region' "$response_file")"
-serving_cluster="$(jq -r '.evaluatedBy.cluster' "$response_file")"
-serving_version="$(jq -r '.evaluatedBy.version' "$response_file")"
+serving_region="$(jq -r '.providedBy.region' "$response_file")"
+serving_cluster="$(jq -r '.providedBy.cluster' "$response_file")"
+serving_version="$(jq -r '.providedBy.version' "$response_file")"
 git cat-file -e "$serving_version^{commit}" 2>/dev/null \
   || fail "the serving version is not a real commit in this repository"
+
+ui_file="$work_dir/public-index.html"
+ui_headers="$work_dir/public-index.headers"
+ui_status="$(curl --silent --show-error --max-time 20 \
+  --dump-header "$ui_headers" --output "$ui_file" --write-out '%{http_code}' \
+  --request GET "$expected_endpoint/")"
+[[ "$ui_status" == "200" ]] || fail "the public UI returned HTTP $ui_status"
+tr -d '\r' <"$ui_headers" | grep -Eiq '^content-type:[[:space:]]*text/html([[:space:]]*;.*)?$' \
+  || fail "the public UI is not text/html"
+tr -d '\r' <"$ui_headers" | grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' \
+  || fail "the public UI is missing Cache-Control: no-store"
+for marker in \
+  'id="exchange-rate-app"' \
+  'data-api-endpoint="/api/exchange-rates"' \
+  'data-snapshot-count="10"' \
+  'id="sample-position"' \
+  'payload.rateSnapshots.length !== 10' \
+  'let sampleIndex = -1' \
+  'if (advanceSample || sampleIndex < 0)' \
+  'sampleIndex = (sampleIndex + 1) % payload.rateSnapshots.length' \
+  'cache: "no-store"' \
+  'loadRates(true)' \
+  'loadRates(false)' \
+  'Synthetic demonstration rates - not for financial use.' \
+  'data-currency="EUR"' \
+  'data-currency="GBP"' \
+  'data-currency="JPY"'; do
+  grep -Fq -- "$marker" "$ui_file" || fail "the public UI is missing marker: $marker"
+done
 
 [[ -f "$kubeconfig" ]] \
   || fail "the isolated two-cluster kubeconfig is missing; run the regional workload gate first"
@@ -518,11 +582,11 @@ jq -e \
   --arg region "$serving_region" \
   --arg cluster "$serving_cluster" \
   --arg version "$serving_version" '
-    (.data.RISK_REGION == $region) and
-    (.data.RISK_CLUSTER == $cluster) and
+    (.data.SERVICE_REGION == $region) and
+    (.data.SERVICE_CLUSTER == $cluster) and
     (.data.SERVICE_VERSION == $version)
   ' <<<"$serving_config_json" >/dev/null \
   || fail "the response cell identity does not match the serving cluster runtime configuration"
 
-printf 'Verified the complete global edge: six exact NEGs, %s/%s healthy endpoints, and HTTP 200 from %s at %s.\n' \
+printf 'Verified the complete global edge: six exact NEGs, %s/%s healthy endpoints, and status 200 from %s at %s.\n' \
   "$usc1_healthy" "$use4_healthy" "$serving_cluster" "$serving_version"

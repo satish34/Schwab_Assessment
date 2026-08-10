@@ -36,16 +36,16 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            - name: RISK_REGION
+            - name: SERVICE_REGION
               valueFrom:
                 configMapKeyRef:
                   name: runtime-config
-                  key: RISK_REGION
-            - name: RISK_CLUSTER
+                  key: SERVICE_REGION
+            - name: SERVICE_CLUSTER
               valueFrom:
                 configMapKeyRef:
                   name: runtime-config
-                  key: RISK_CLUSTER
+                  key: SERVICE_CLUSTER
             - name: SERVICE_VERSION
               valueFrom:
                 configMapKeyRef:

@@ -1,7 +1,9 @@
 # Grafana dashboard
 
-`risk-dashboard.json` uses BigQuery for App A errors and latency, and Cloud
+`currency-dashboard.json` uses BigQuery for App A errors and latency, and Cloud
 Monitoring for restarts and utilization. Every query separates the two cells.
+`risk_logs` and `risk-system` remain in queries only because they are the
+already-deployed BigQuery dataset and Kubernetes namespace identifiers.
 
 The provisioning files are for self-hosted Grafana. Install
 `grafana-bigquery-datasource` 3.2.0, mount the dashboard at
@@ -10,20 +12,38 @@ The provisioning files are for self-hosted Grafana. Install
 Identity. The data sources use metadata-based authentication; do not create a
 service-account key.
 
-For Grafana Cloud, create data sources with UIDs `risk-bigquery` and
-`risk-cloud-monitoring`, then import the dashboard JSON. Use a supported
+For Grafana Cloud, create data sources with UIDs `currency-bigquery` and
+`currency-cloud-monitoring`, then import the dashboard JSON. Use a supported
 keyless federation path to the existing restricted `grafana-reader` identity;
 do not broaden its IAM or create a key.
 
-Validate version-controlled content without credentials:
+From the repository root, validate version-controlled content without
+credentials:
 
 ```bash
 bash scripts/verify-grafana.sh --static
 ```
 
-The live gate requires `GRAFANA_URL` and a session-only `GRAFANA_TOKEN`. It
-checks source data in both cells, both Grafana data-source health endpoints,
-the imported dashboard, and every panel query:
+For a bounded local proof, start the digest-pinned loopback runtime:
+
+```bash
+bash scripts/local-grafana-evidence.sh start
+```
+
+Open the printed URL, then run `verify` or `cleanup` as needed. The runtime
+impersonates the restricted `grafana-reader` for at most one hour, exposes the
+token only through an internal metadata-compatible Docker network, and enables
+anonymous Viewer access only on `127.0.0.1`. It never creates a service-account
+key.
+
+```bash
+bash scripts/local-grafana-evidence.sh verify
+bash scripts/local-grafana-evidence.sh cleanup
+```
+
+For an existing HTTPS Grafana instance, `make verify-grafana` still accepts a
+session-only `GRAFANA_TOKEN`. Both paths check source data, both data-source
+health endpoints, the imported dashboard, and every panel query:
 
 ```bash
 make verify-grafana

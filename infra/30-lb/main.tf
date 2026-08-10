@@ -59,45 +59,32 @@ resource "google_compute_url_map" "application" {
   deletion_policy = "DELETE"
 }
 
-resource "google_compute_url_map" "http_redirect" {
-  count = local.tls_enabled ? 1 : 0
-
-  project = var.project_id
-  name    = "risk-app-a-http-redirect"
-
-  description     = "Redirect HTTP to the trusted HTTPS endpoint."
-  deletion_policy = "DELETE"
-
-  default_url_redirect {
-    host_redirect          = local.domain_name
-    https_redirect         = true
-    redirect_response_code = "PERMANENT_REDIRECT"
-    strip_query            = false
-  }
-}
-
 resource "google_compute_target_http_proxy" "application" {
+  count = local.tls_enabled ? 0 : 1
+
   project = var.project_id
   name    = "risk-app-a-http-proxy"
 
-  description = local.tls_enabled ? "Redirect HTTP to HTTPS." : "Serve the core HTTP endpoint."
-  url_map = local.tls_enabled ? (
-    google_compute_url_map.http_redirect[0].id
-  ) : google_compute_url_map.application.id
+  # Keep the legacy metadata stable for no-domain recovery plans.
+  description     = "Serve the core HTTP endpoint."
+  url_map         = google_compute_url_map.application.id
   deletion_policy = "DELETE"
 }
 
 resource "google_compute_global_forwarding_rule" "http" {
+  count = local.tls_enabled ? 0 : 1
+
   project = var.project_id
   name    = "risk-app-a-http"
 
-  description           = local.tls_enabled ? "Public HTTP redirect." : "Public HTTP application endpoint."
+  # Keep the legacy metadata stable for no-domain recovery plans.
+  description           = "Public HTTP application endpoint."
   ip_address            = local.global_outputs.global_ipv4_address
   ip_protocol           = "TCP"
   port_range            = "80"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   network_tier          = "PREMIUM"
-  target                = google_compute_target_http_proxy.application.id
+  target                = google_compute_target_http_proxy.application[0].id
   labels                = local.labels
   deletion_policy       = "DELETE"
 }

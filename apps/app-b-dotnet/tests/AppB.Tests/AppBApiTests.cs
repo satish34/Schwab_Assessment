@@ -1,50 +1,87 @@
+using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AppB.Tests;
 
 public sealed class AppBApiTests
 {
-    private const string ContractRequest = """
-        {
-          "requestId": "550e8400-e29b-41d4-a716-446655440000",
-          "amount": 1250.50,
-          "currency": "USD",
-          "merchantCategory": "ELECTRONICS",
-          "countryCode": "US",
-          "channel": "CARD_NOT_PRESENT"
-        }
-        """;
+    private const string ExchangeRatesPath = "/internal/exchange-rates";
 
     [Fact]
-    public async Task ExactContractRequestReturnsExactResponseShapeAndIdentity()
+    public async Task GetReturnsExactExchangeRateContractAndIdentity()
     {
         await using var factory = new AppBFactory();
         using var client = factory.CreateClient();
-        using var request = CreateRequest(ContractRequest);
+        using var request = CreateRequest();
 
         using var response = await client.SendAsync(request);
+        var json = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal(
+            "{\"baseCurrency\":\"USD\",\"rateSnapshots\":[" +
+            "{\"EUR\":0.92,\"GBP\":0.78,\"JPY\":149.50}," +
+            "{\"EUR\":0.93,\"GBP\":0.79,\"JPY\":150.10}," +
+            "{\"EUR\":0.91,\"GBP\":0.77,\"JPY\":148.90}," +
+            "{\"EUR\":0.92,\"GBP\":0.79,\"JPY\":149.80}," +
+            "{\"EUR\":0.93,\"GBP\":0.78,\"JPY\":149.20}," +
+            "{\"EUR\":0.91,\"GBP\":0.78,\"JPY\":150.00}," +
+            "{\"EUR\":0.92,\"GBP\":0.77,\"JPY\":149.10}," +
+            "{\"EUR\":0.93,\"GBP\":0.77,\"JPY\":149.70}," +
+            "{\"EUR\":0.91,\"GBP\":0.79,\"JPY\":149.40}," +
+            "{\"EUR\":0.92,\"GBP\":0.78,\"JPY\":149.90}]," +
+            "\"disclaimer\":\"Synthetic demonstration rates - not for financial use.\"," +
+            "\"providedBy\":{\"service\":\"app-b-engine\",\"region\":\"us-central1\"," +
+            "\"cluster\":\"gke-currency-usc1\",\"version\":\"test-sha\"}}",
+            json);
+    }
+
+    [Fact]
+    public async Task ResponseHasOnlyTheFrozenTopLevelFields()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync(ExchangeRatesPath);
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        var root = body.RootElement;
-        Assert.Equal("550e8400-e29b-41d4-a716-446655440000", root.GetProperty("requestId").GetString());
-        Assert.Equal(48, root.GetProperty("score").GetInt32());
-        Assert.Equal("REVIEW", root.GetProperty("decision").GetString());
+
         Assert.Equal(
-            ["CARD_NOT_PRESENT", "AMOUNT_OVER_1000"],
-            root.GetProperty("rulesFired").EnumerateArray().Select(item => item.GetString()));
-        Assert.Equal("app-b-engine", root.GetProperty("evaluatedBy").GetProperty("service").GetString());
-        Assert.Equal("us-central1", root.GetProperty("evaluatedBy").GetProperty("region").GetString());
-        Assert.Equal("gke-risk-usc1", root.GetProperty("evaluatedBy").GetProperty("cluster").GetString());
-        Assert.Equal("test-sha", root.GetProperty("evaluatedBy").GetProperty("version").GetString());
+            ["baseCurrency", "rateSnapshots", "disclaimer", "providedBy"],
+            body.RootElement.EnumerateObject().Select(property => property.Name));
+        var snapshots = body.RootElement.GetProperty("rateSnapshots").EnumerateArray().ToArray();
+        Assert.Equal(10, snapshots.Length);
+        Assert.All(
+            snapshots,
+            snapshot => Assert.Equal(
+                ["EUR", "GBP", "JPY"],
+                snapshot.EnumerateObject().Select(property => property.Name)));
         Assert.Equal(
-            ["requestId", "score", "decision", "rulesFired", "evaluatedBy"],
-            root.EnumerateObject().Select(property => property.Name));
+            ["service", "region", "cluster", "version"],
+            body.RootElement.GetProperty("providedBy").EnumerateObject().Select(property => property.Name));
+    }
+
+    [Fact]
+    public async Task RepeatedGetsReturnTheSameStatelessCatalog()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+
+        using var first = await client.GetAsync(ExchangeRatesPath);
+        using var second = await client.GetAsync(ExchangeRatesPath);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal(
+            await first.Content.ReadAsStringAsync(),
+            await second.Content.ReadAsStringAsync());
     }
 
     [Theory]
@@ -61,14 +98,108 @@ public sealed class AppBApiTests
     }
 
     [Fact]
-    public async Task InvalidRequestReturns400()
+    public async Task PostIsNotAllowedOnTheGetOnlyEndpoint()
     {
         await using var factory = new AppBFactory();
         using var client = factory.CreateClient();
 
-        using var response = await client.PostAsJsonAsync("/v1/evaluate", new { amount = -1 });
+        using var response = await client.PostAsync(ExchangeRatesPath, null);
+
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task QueryInputIsRejectedWithoutReturningRates()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync($"{ExchangeRatesPath}?base=EUR");
+        var body = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Contains("Query input is not allowed.", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("rateSnapshots", body, StringComparison.Ordinal);
+        var entries = factory.LogOutput.ToString().Split(
+            ["\r\n", "\n"],
+            StringSplitOptions.RemoveEmptyEntries);
+        var rejectionLine = Assert.Single(entries, entry =>
+        {
+            using var document = JsonDocument.Parse(entry);
+            return document.RootElement.GetProperty("log_type").GetString() == "request";
+        });
+        using var rejectionDocument = JsonDocument.Parse(rejectionLine);
+        var rejection = rejectionDocument.RootElement;
+        Assert.Equal(400, rejection.GetProperty("status_code").GetInt32());
+        Assert.Equal("validation_error", rejection.GetProperty("error_type").GetString());
+        Assert.Equal(string.Empty, rejection.GetProperty("decision").GetString());
+    }
+
+    [Fact]
+    public async Task FixedLengthGetBodyIsRejectedWithoutReturningRates()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, ExchangeRatesPath)
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        };
+        Assert.Equal(2, request.Content.Headers.ContentLength);
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Request body input is not allowed.", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("rateSnapshots", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ChunkedGetBodyWithoutContentLengthIsRejectedWithoutReturningRates()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, ExchangeRatesPath)
+        {
+            Content = new UnknownLengthContent("{}"),
+        };
+        request.Headers.TransferEncodingChunked = true;
+        Assert.Null(request.Content.Headers.ContentLength);
+
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Request body input is not allowed.", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("rateSnapshots", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CellProbeUsesTheDependencyProbeLogContract()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+        request.Headers.Add("x-cell-probe", "true");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var entries = factory.LogOutput.ToString().Split(
+            ["\r\n", "\n"],
+            StringSplitOptions.RemoveEmptyEntries);
+        var probeLine = Assert.Single(entries, entry =>
+        {
+            using var document = JsonDocument.Parse(entry);
+            return document.RootElement.GetProperty("log_type").GetString() == "dependency_probe";
+        });
+        using var probeDocument = JsonDocument.Parse(probeLine);
+        var probe = probeDocument.RootElement;
+        Assert.Equal("/internal/exchange-rates", probe.GetProperty("route").GetString());
+        Assert.Equal("GET", probe.GetProperty("method").GetString());
+        Assert.Equal("RATES_RETURNED", probe.GetProperty("decision").GetString());
+        Assert.Equal(19, probe.EnumerateObject().Count());
     }
 
     [Fact]
@@ -76,9 +207,24 @@ public sealed class AppBApiTests
     {
         await using var factory = new AppBFactory();
         using var client = factory.CreateClient();
-        using var request = CreateRequest(ContractRequest);
+        using var request = CreateRequest();
         request.Headers.Remove("traceparent");
         request.Headers.TryAddWithoutValidation("traceparent", "invalid");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+    }
+
+    [Fact]
+    public async Task InvalidCorrelationIdReturns400()
+    {
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+        request.Headers.Remove("x-correlation-id");
+        request.Headers.TryAddWithoutValidation("x-correlation-id", "invalid");
 
         using var response = await client.SendAsync(request);
 
@@ -97,14 +243,18 @@ public sealed class AppBApiTests
         {
             await using var factory = new AppBFactory(path);
             using var client = factory.CreateClient();
-            using var request = CreateRequest(ContractRequest);
+            using var request = CreateRequest();
 
             using var response = await client.SendAsync(request);
             var body = await response.Content.ReadAsStringAsync();
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-            Assert.DoesNotContain("configured evaluation fault", body, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("InjectedFaultException", body, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Exchange rates unavailable", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("configured exchange-rate fault", body, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                nameof(InjectedExchangeRateFaultException),
+                body,
+                StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -112,12 +262,36 @@ public sealed class AppBApiTests
         }
     }
 
-    private static HttpRequestMessage CreateRequest(string json)
+    [Fact]
+    public async Task InjectedLatencyIsAppliedBeforeAResponse()
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/evaluate")
+        var path = Path.Combine(Path.GetTempPath(), $"app-b-latency-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(
+            path,
+            """{"injected_latency_ms":75,"injected_error_rate":0.0}""");
+
+        try
         {
-            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
-        };
+            await using var factory = new AppBFactory(path);
+            using var client = factory.CreateClient();
+            using var request = CreateRequest();
+            var started = Stopwatch.GetTimestamp();
+
+            using var response = await client.SendAsync(request);
+            var elapsed = Stopwatch.GetElapsedTime(started);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True(elapsed >= TimeSpan.FromMilliseconds(60), $"Elapsed only {elapsed.TotalMilliseconds} ms.");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static HttpRequestMessage CreateRequest()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, ExchangeRatesPath);
         request.Headers.Add("x-correlation-id", "550e8400-e29b-41d4-a716-446655440000");
         request.Headers.Add(
             "traceparent",
@@ -125,22 +299,49 @@ public sealed class AppBApiTests
         return request;
     }
 
+    private sealed class UnknownLengthContent(string value) : HttpContent
+    {
+        private readonly byte[] _content = Encoding.UTF8.GetBytes(value);
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(_content).AsTask();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
     private sealed class AppBFactory(string? faultPath = null) : WebApplicationFactory<Program>
     {
+        public StringWriter LogOutput { get; } = new();
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["RISK_REGION"] = "us-central1",
-                    ["RISK_CLUSTER"] = "gke-risk-usc1",
+                    ["SERVICE_REGION"] = "us-central1",
+                    ["SERVICE_CLUSTER"] = "gke-currency-usc1",
                     ["SERVICE_VERSION"] = "test-sha",
                     ["GOOGLE_CLOUD_PROJECT"] = "test-project",
                     ["FAULT_CONFIG_PATH"] = faultPath ?? Path.Combine(
                         Path.GetTempPath(),
                         $"missing-app-b-fault-{Guid.NewGuid():N}.json"),
                 });
+            });
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<StructuredLogWriter>();
+                services.AddSingleton(new StructuredLogWriter(
+                    new AppIdentity(
+                        "us-central1",
+                        "gke-currency-usc1",
+                        "test-sha",
+                        "test-project"),
+                    LogOutput));
             });
         }
     }

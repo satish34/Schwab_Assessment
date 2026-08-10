@@ -80,8 +80,8 @@ done
 
 git cat-file -e "$git_sha^{commit}" 2>/dev/null \
   || fail "Git SHA $git_sha is not a commit in this repository"
-[[ -f "$repo_root/testdata/request.json" ]] \
-  || fail "the canonical synthetic request is missing"
+[[ -f "$repo_root/testdata/expected-exchange-rates.json" ]] \
+  || fail "the expected exchange-rate response fixture is missing"
 
 active_account="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null
@@ -581,31 +581,33 @@ verify_local_path() {
   status="$(
     curl --silent --show-error --max-time 10 \
       --output "$response" --write-out '%{http_code}' \
-      --request POST "http://127.0.0.1:$local_port/v1/risk" \
-      --header 'Content-Type: application/json' \
+      --request GET "http://127.0.0.1:$local_port/api/exchange-rates" \
       --header "x-correlation-id: $correlation_id" \
-      --header "traceparent: 00-$trace_id-$span_id-01" \
-      --data-binary "@$repo_root/testdata/request.json"
+      --header "traceparent: 00-$trace_id-$span_id-01"
   )"
   [[ "$status" == "200" ]] \
     || fail "$context synthetic App A request returned HTTP ${status:-<none>}"
   jq -e \
+    --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
     --arg region "$expected_region" \
     --arg cluster "$expected_cluster" \
     --arg version "$git_sha" '
-      .requestId == "550e8400-e29b-41d4-a716-446655440000" and
-      .score == 48 and
-      .decision == "REVIEW" and
-      .rulesFired == ["CARD_NOT_PRESENT", "AMOUNT_OVER_1000"] and
-      .evaluatedBy.service == "app-b-engine" and
-      .evaluatedBy.region == $region and
-      .evaluatedBy.cluster == $cluster and
-      .evaluatedBy.version == $version
+      (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
+      (.rateSnapshots | length == 10) and
+      all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
+      (.providedBy | keys == ["cluster", "region", "service", "version"]) and
+      .baseCurrency == $expected[0].baseCurrency and
+      .rateSnapshots == $expected[0].rateSnapshots and
+      .disclaimer == $expected[0].disclaimer and
+      .providedBy.service == $expected[0].providedBy.service and
+      .providedBy.region == $region and
+      .providedBy.cluster == $cluster and
+      .providedBy.version == $version
     ' "$response" >/dev/null \
     || fail "$context response does not prove the local App A to App B path"
 
   stop_port_forward
-  printf '%s local App A -> App B request passed (%s/%s).\n' \
+  printf '%s local App A -> App B exchange-rate request passed (%s/%s).\n' \
     "$context" "$expected_region" "$expected_cluster"
 }
 

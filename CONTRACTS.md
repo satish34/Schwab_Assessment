@@ -12,12 +12,18 @@ same change.
   cells. Neither is a strict traffic primary.
 - Internal call: App A calls only the local
   `app-b-engine.risk-system.svc.cluster.local` ClusterIP.
-- Cell failover: App A's background evaluation probe controls cached
+- Cell failover: App A's background exchange-rate probe controls cached
   `/health/cell` state. Kubernetes readiness never depends on App B.
 - Observability: Cloud Logging to partitioned BigQuery for application panels;
   Cloud Monitoring for restart and utilization panels.
 
 ## Resource names
+
+The live foundation was created before the application changed from a risk
+example to a currency-rate demo. Existing `risk-*` cloud, network, namespace,
+dataset, and registry identifiers remain stable technical names; renaming them
+would replace or migrate healthy infrastructure and is outside this application
+release.
 
 | Contract | Value |
 |---|---|
@@ -73,48 +79,53 @@ them. App B remains one Deployment with an HPA range of 2-6.
 ## Runtime environment
 
 ```text
-RISK_REGION
-RISK_CLUSTER
+SERVICE_REGION
+SERVICE_CLUSTER
 SERVICE_VERSION
 APP_B_BASE_URL=http://app-b-engine.risk-system.svc.cluster.local:8080
-FAULT_CONFIG_PATH=/etc/risk-faults/faults.json   # App B only
+FAULT_CONFIG_PATH=/etc/app-b-faults/faults.json  # App B only
 GOOGLE_CLOUD_PROJECT                            # only with Google telemetry
 ```
 
 Docker Compose may override only the host portion of `APP_B_BASE_URL`; port
-`8080` and path `/v1/evaluate` remain fixed.
+`8080` and path `/internal/exchange-rates` remain fixed.
+
+Deployed images must use the full 40-character release commit. A dirty local
+review uses `local-<HEAD12>-dirty` so uncommitted source is never presented as
+the older commit; deployment scripts continue to reject that local-only value.
 
 ## Public App A API
 
 ```http
-POST /v1/risk
-Content-Type: application/json
+GET /api/exchange-rates
 x-correlation-id: optional UUID supplied by client
 traceparent: optional W3C trace context
+Cache-Control: no-store
 ```
 
-Request:
-
-```json
-{
-  "requestId": "550e8400-e29b-41d4-a716-446655440000",
-  "amount": 1250.50,
-  "currency": "USD",
-  "merchantCategory": "ELECTRONICS",
-  "countryCode": "US",
-  "channel": "CARD_NOT_PRESENT"
-}
-```
+There is no request body or query input. App A generates missing correlation
+and trace identifiers, calls its local App B, and returns App B's response
+unchanged.
 
 Response:
 
 ```json
 {
-  "requestId": "550e8400-e29b-41d4-a716-446655440000",
-  "score": 48,
-  "decision": "REVIEW",
-  "rulesFired": ["CARD_NOT_PRESENT", "AMOUNT_OVER_1000"],
-  "evaluatedBy": {
+  "baseCurrency": "USD",
+  "rateSnapshots": [
+    { "EUR": 0.92, "GBP": 0.78, "JPY": 149.50 },
+    { "EUR": 0.93, "GBP": 0.79, "JPY": 150.10 },
+    { "EUR": 0.91, "GBP": 0.77, "JPY": 148.90 },
+    { "EUR": 0.92, "GBP": 0.79, "JPY": 149.80 },
+    { "EUR": 0.93, "GBP": 0.78, "JPY": 149.20 },
+    { "EUR": 0.91, "GBP": 0.78, "JPY": 150.00 },
+    { "EUR": 0.92, "GBP": 0.77, "JPY": 149.10 },
+    { "EUR": 0.93, "GBP": 0.77, "JPY": 149.70 },
+    { "EUR": 0.91, "GBP": 0.79, "JPY": 149.40 },
+    { "EUR": 0.92, "GBP": 0.78, "JPY": 149.90 }
+  ],
+  "disclaimer": "Synthetic demonstration rates - not for financial use.",
+  "providedBy": {
     "service": "app-b-engine",
     "region": "us-central1",
     "cluster": "gke-risk-usc1",
@@ -125,8 +136,8 @@ Response:
 
 Status mapping:
 
-- `200`: evaluated decision
-- `400`: request validation failure
+- `200`: rates returned
+- `400`: unsupported response media request
 - `503`: open circuit or unavailable local dependency
 - `504`: downstream timeout
 
@@ -135,20 +146,24 @@ App A must not leak App B exception text to callers.
 ## Internal App B API
 
 ```http
-POST http://app-b-engine.risk-system.svc.cluster.local:8080/v1/evaluate
+GET http://app-b-engine.risk-system.svc.cluster.local:8080/internal/exchange-rates
 ```
 
-The request and response payloads are the public contract. App A forwards
-`traceparent` and `x-correlation-id`.
+The internal endpoint takes no body or query input and returns the same response
+shape as the public API. App A forwards `traceparent` and `x-correlation-id`.
+The ten rate snapshots and disclaimer are deterministic; random or external
+market values are forbidden. App B returns the complete immutable catalog on
+every request, so multiple Pods do not need shared state.
 
-Decision values are exactly:
+## Browser UI
 
-```text
-APPROVE | REVIEW | DECLINE
-```
-
-Evaluation is deterministic for a given request. Random production decisions
-are forbidden.
+`GET /` serves a small responsive rate board. It automatically fetches
+`GET /api/exchange-rates` with browser caching disabled, shows the first
+snapshot, and identifies the serving region and cluster. Each refresh-button
+click performs another GET and advances the local display through all ten
+snapshots. It sends no selection input; App B remains stateless and every click
+still exercises the full dependency path. The page must display the
+synthetic-data disclaimer.
 
 ## Health APIs
 
@@ -157,7 +172,7 @@ App A:
 ```text
 GET /health/live   process is alive; never calls App B
 GET /health/ready  App A is initialized; never depends on App B
-GET /health/cell   cached background App B evaluation-probe state
+GET /health/cell   cached background App B exchange-rate probe state
 ```
 
 App B:
@@ -176,7 +191,7 @@ recovery threshold:   5 consecutive successes
 initial state:        UNKNOWN / HTTP 503
 ```
 
-The probe uses a fixed synthetic evaluation request and
+The probe calls the same no-input internal exchange-rate endpoint with
 `x-cell-probe: true`. Both services log it as `dependency_probe`.
 
 ## Resilience constants
@@ -191,7 +206,7 @@ open duration:         10 seconds
 
 ## Fault configuration
 
-Path: `/etc/risk-faults/faults.json`
+Path: `/etc/app-b-faults/faults.json`
 
 ```json
 {
@@ -212,7 +227,7 @@ log. Field types are stable.
 ```json
 {
   "severity": "INFO",
-  "message": "risk evaluation completed",
+  "message": "exchange rates returned",
   "log_type": "request",
   "service": "app-a-gateway",
   "service_version": "GIT_SHA",
@@ -220,12 +235,12 @@ log. Field types are stable.
   "cluster": "gke-risk-usc1",
   "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
   "trace_id": "32_lowercase_hex_characters",
-  "route": "/v1/risk",
-  "method": "POST",
+  "route": "/api/exchange-rates",
+  "method": "GET",
   "status_code": 200,
   "latency_ms": 42,
   "downstream_latency_ms": 31,
-  "decision": "REVIEW",
+  "decision": "RATES_RETURNED",
   "error_type": "",
   "stack_trace": "",
   "is_test": false,
@@ -270,6 +285,8 @@ shard's zonal node selector; App B uses soft zonal topology spreading.
 ## Load-balancer contract
 
 ```text
+public frontend with domain = HTTPS port 443 only
+public HTTP port 80         = absent when TLS is enabled
 load_balancing_scheme = EXTERNAL_MANAGED
 protocol              = HTTP
 balancing_mode        = RATE
@@ -285,6 +302,11 @@ unhealthy threshold   = 2
 healthy threshold     = 3
 health logging        = enabled
 ```
+
+The `protocol = HTTP` value is the private load-balancer-to-Pod backend
+protocol. It does not expose a public HTTP listener. A no-domain bootstrap may
+temporarily use port 80, but enabling the trusted domain removes that forwarding
+rule and its target HTTP proxy rather than redirecting it.
 
 ## Terraform state and dependency boundaries
 
@@ -302,12 +324,20 @@ health logging        = enabled
 
 ```text
 01-budget.png
+01-budget.txt
 02-clusters.txt
 03-negs.txt
 04-backend-health-before.txt
 05-public-endpoint.json
 06-logging.png
+06-logging.txt
 07-bigquery.png
+07-bigquery.txt
+07-bigquery-schema.json
+07-bigquery-error-rate.csv
+07-bigquery-latency-percentiles.csv
+07-bigquery-trace-join.csv
+07-bigquery-regional-traffic.csv
 08-grafana.png
 09-failover.csv
 09-failover.png

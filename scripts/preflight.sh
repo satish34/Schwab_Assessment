@@ -18,7 +18,7 @@ if [[ "$ADMIN_CIDR" == "0.0.0.0/0" || ! "$ADMIN_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]
   exit 1
 fi
 
-required_tools=(git terraform docker jq make java dotnet gcloud kubectl curl gke-gcloud-auth-plugin)
+required_tools=(git terraform docker jq make java dotnet python gcloud kubectl curl gke-gcloud-auth-plugin)
 for tool in "${required_tools[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf 'Missing required tool: %s\n' "$tool" >&2
@@ -29,6 +29,10 @@ done
 docker info >/dev/null
 docker compose version >/dev/null
 kubectl kustomize --help >/dev/null
+python -c 'import matplotlib' >/dev/null 2>&1 || {
+  printf 'Missing required Python package: matplotlib\n' >&2
+  exit 1
+}
 
 active_account="$(gcloud --configuration="$GCLOUD_CONFIGURATION" auth list \
   --filter='status:ACTIVE' --format='value(account)')"

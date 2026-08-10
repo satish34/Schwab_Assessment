@@ -25,7 +25,6 @@ request_counter=0
 request_status=""
 request_correlation_id=""
 request_trace_id=""
-request_request_id=""
 request_response_file=""
 request_region=""
 request_cluster=""
@@ -144,7 +143,8 @@ for command_name in curl gcloud git jq kubectl od sed terraform timeout; do
 done
 for required_file in \
   "$repo_root/k8s/faults/healthy.yaml" \
-  "$repo_root/k8s/faults/unavailable.yaml"; do
+  "$repo_root/k8s/faults/unavailable.yaml" \
+  "$repo_root/testdata/expected-exchange-rates.json"; do
   [[ -f "$required_file" ]] || fail "required file is missing: $required_file"
 done
 git cat-file -e "$git_sha^{commit}" 2>/dev/null \
@@ -254,13 +254,13 @@ public_endpoint="$(jq -r '.public_endpoint.value // ""' <<<"$lb_outputs")"
 jq -e --arg endpoint "$public_endpoint" '
   (.backend_service_name.value == "risk-app-a-gateway-backend") and
   (.public_endpoint.value == $endpoint) and
-  ((.tls_enabled.value == false and
-      ($endpoint | test("^http://([0-9]{1,3}\\.){3}[0-9]{1,3}$"))) or
-    (.tls_enabled.value == true and
-      ($endpoint | test("^https://[A-Za-z0-9.-]+$")))) and
+  (.tls_enabled.value == true) and
+  ($endpoint == "https://satish.store") and
+  (.forwarding_rule_names.value.http == null) and
+  (.forwarding_rule_names.value.https == "risk-app-a-https") and
   ((.neg_backends.value | length) == 6)
 ' <<<"$lb_outputs" >/dev/null \
-  || fail "the current 30-lb outputs do not describe the frozen public edge"
+  || fail "the current 30-lb outputs do not describe the frozen HTTPS-only public edge"
 
 mkdir -p "$runtime_dir"
 git check-ignore --quiet -- "$manifest" \
@@ -284,86 +284,35 @@ random_uuid() {
     "${value:16:4}" "${value:20:12}"
 }
 
-write_request() {
-  local decision="$1"
-  local request_id="$2"
-  local output_file="$3"
-  local amount merchant_category country_code channel
-
-  case "$decision" in
-    APPROVE)
-      amount=100
-      merchant_category="ELECTRONICS"
-      country_code="US"
-      channel="CARD_PRESENT"
-      ;;
-    REVIEW)
-      amount=1250.50
-      merchant_category="ELECTRONICS"
-      country_code="US"
-      channel="CARD_NOT_PRESENT"
-      ;;
-    DECLINE)
-      amount=20000
-      merchant_category="GAMBLING"
-      country_code="CA"
-      channel="CARD_NOT_PRESENT"
-      ;;
-    *) fail "unsupported decision profile: $decision" ;;
-  esac
-
-  jq -n \
-    --arg request_id "$request_id" \
-    --argjson amount "$amount" \
-    --arg merchant_category "$merchant_category" \
-    --arg country_code "$country_code" \
-    --arg channel "$channel" '
-      {
-        requestId: $request_id,
-        amount: $amount,
-        currency: "USD",
-        merchantCategory: $merchant_category,
-        countryCode: $country_code,
-        channel: $channel
-      }
-    ' >"$output_file"
-}
-
 issue_request() {
   local base_url="$1"
   local route="$2"
-  local decision="$3"
-  local request_file
   local span_id
 
   request_counter=$((request_counter + 1))
   request_correlation_id="$(random_uuid)"
   request_trace_id="$(random_hex 16)"
-  request_request_id="$(random_uuid)"
   span_id="$(random_hex 8)"
   [[ "$request_trace_id" != "00000000000000000000000000000000" ]] \
     || request_trace_id="1${request_trace_id:1}"
   [[ "$span_id" != "0000000000000000" ]] \
     || span_id="1${span_id:1}"
-  request_file="$work_dir/request-$request_counter.json"
   request_response_file="$work_dir/response-$request_counter.json"
-  write_request "$decision" "$request_request_id" "$request_file"
 
   request_status="$(
     curl --silent --show-error --max-time 15 \
       --output "$request_response_file" --write-out '%{http_code}' \
-      --request POST "$base_url$route" \
+      --request GET "$base_url$route" \
       --header 'Accept: application/json' \
-      --header 'Content-Type: application/json' \
       --header "x-correlation-id: $request_correlation_id" \
       --header "traceparent: 00-$request_trace_id-$span_id-01" \
-      --data-binary "@$request_file" 2>/dev/null || true
+      2>/dev/null || true
   )"
   request_region=""
   request_cluster=""
   if [[ "$request_status" == "200" ]]; then
-    request_region="$(jq -r '.evaluatedBy.region // ""' "$request_response_file")"
-    request_cluster="$(jq -r '.evaluatedBy.cluster // ""' "$request_response_file")"
+    request_region="$(jq -r '.providedBy.region // ""' "$request_response_file")"
+    request_cluster="$(jq -r '.providedBy.cluster // ""' "$request_response_file")"
   fi
 }
 
@@ -384,7 +333,6 @@ record_event() {
     --arg decision "$decision" \
     --arg correlation_id "$request_correlation_id" \
     --arg trace_id "$request_trace_id" \
-    --arg request_id "$request_request_id" \
     --argjson http_status "$request_status" '
       {
         path: $path,
@@ -395,33 +343,35 @@ record_event() {
         decision: $decision,
         correlation_id: $correlation_id,
         trace_id: $trace_id,
-        request_id: $request_id,
         http_status: $http_status
       }
     ' >>"$events_file"
 }
 
 assert_success_response() {
-  local expected_decision="$1"
-  local expected_region="${2:-}"
-  local expected_cluster="${3:-}"
+  local expected_region="${1:-}"
+  local expected_cluster="${2:-}"
 
   [[ "$request_status" == "200" ]] \
     || fail "synthetic request returned HTTP ${request_status:-<none>}"
   jq -e \
-    --arg request_id "$request_request_id" \
-    --arg decision "$expected_decision" \
+    --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
     --arg version "$git_sha" '
-      (.requestId == $request_id) and
-      (.decision == $decision) and
-      (.evaluatedBy.service == "app-b-engine") and
-      (.evaluatedBy.version == $version) and
-      ((.evaluatedBy.region == "us-central1" and
-        .evaluatedBy.cluster == "gke-risk-usc1") or
-       (.evaluatedBy.region == "us-east4" and
-        .evaluatedBy.cluster == "gke-risk-use4"))
+      (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
+      (.rateSnapshots | length == 10) and
+      all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
+      (.providedBy | keys == ["cluster", "region", "service", "version"]) and
+      .baseCurrency == $expected[0].baseCurrency and
+      .rateSnapshots == $expected[0].rateSnapshots and
+      .disclaimer == $expected[0].disclaimer and
+      .providedBy.service == $expected[0].providedBy.service and
+      .providedBy.version == $version and
+      ((.providedBy.region == "us-central1" and
+        .providedBy.cluster == "gke-risk-usc1") or
+       (.providedBy.region == "us-east4" and
+        .providedBy.cluster == "gke-risk-use4"))
     ' "$request_response_file" >/dev/null \
-    || fail "HTTP 200 response does not match the immutable risk contract"
+    || fail "HTTP 200 response does not match the immutable exchange-rate contract"
   if [[ -n "$expected_region" ]]; then
     [[ "$request_region" == "$expected_region" \
       && "$request_cluster" == "$expected_cluster" ]] \
@@ -464,14 +414,14 @@ seed_successes() {
   local base_url="$2"
   local expected_region="${3:-}"
   local expected_cluster="${4:-}"
-  local round decision
+  local round sample
 
   for ((round = 1; round <= success_rounds; round++)); do
-    for decision in APPROVE REVIEW DECLINE; do
-      issue_request "$base_url" /v1/risk "$decision"
-      assert_success_response "$decision" "$expected_region" "$expected_cluster"
+    for sample in 1 2 3; do
+      issue_request "$base_url" /api/exchange-rates
+      assert_success_response "$expected_region" "$expected_cluster"
       record_event "$path" app-a-gateway success \
-        "$request_region" "$request_cluster" "$decision"
+        "$request_region" "$request_cluster" RATES_RETURNED
       sleep "$request_interval_seconds"
     done
   done
@@ -501,10 +451,10 @@ wait_for_direct_status() {
 
   start_port_forward "$context" "$resource"
   while ((SECONDS < deadline)); do
-    issue_request "http://127.0.0.1:$local_port" "$route" REVIEW
+    issue_request "http://127.0.0.1:$local_port" "$route"
     if [[ "$request_status" == "$expected_status" ]]; then
       if [[ "$expected_status" == "200" ]]; then
-        assert_success_response REVIEW "$expected_region" "$expected_cluster"
+        assert_success_response "$expected_region" "$expected_cluster"
       fi
       stop_port_forward
       return 0
@@ -609,14 +559,14 @@ exercise_controlled_error() {
     || fail "$context does not have two to six running App B Pods"
 
   for pod in "${pods[@]}"; do
-    wait_for_direct_status "$context" "pod/$pod" /v1/evaluate 503 \
+    wait_for_direct_status "$context" "pod/$pod" /internal/exchange-rates 503 \
       "$fault_deadline" "$expected_region" "$expected_cluster" \
       || fail "$context App B Pod $pod did not load the unavailable profile within ${fault_timeout_seconds}s"
     record_event cell app-b-engine controlled_error \
       "$expected_region" "$expected_cluster" ""
   done
 
-  wait_for_direct_status "$context" service/app-a-gateway /v1/risk 503 \
+  wait_for_direct_status "$context" service/app-a-gateway /api/exchange-rates 503 \
     "$fault_deadline" "$expected_region" "$expected_cluster" \
     || fail "$context App A did not surface the controlled dependency error"
   record_event cell app-a-gateway controlled_error \
@@ -625,18 +575,18 @@ exercise_controlled_error() {
   apply_fault_profile "$context" healthy 0.0
   recovery_deadline=$((SECONDS + recovery_timeout_seconds))
   for pod in "${pods[@]}"; do
-    wait_for_direct_status "$context" "pod/$pod" /v1/evaluate 200 \
+    wait_for_direct_status "$context" "pod/$pod" /internal/exchange-rates 200 \
       "$recovery_deadline" "$expected_region" "$expected_cluster" \
       || fail "$context App B Pod $pod did not recover within ${recovery_timeout_seconds}s"
     record_event cell app-b-engine success \
-      "$expected_region" "$expected_cluster" REVIEW
+      "$expected_region" "$expected_cluster" RATES_RETURNED
   done
 
-  wait_for_direct_status "$context" service/app-a-gateway /v1/risk 200 \
+  wait_for_direct_status "$context" service/app-a-gateway /api/exchange-rates 200 \
     "$recovery_deadline" "$expected_region" "$expected_cluster" \
     || fail "$context App A did not recover within ${recovery_timeout_seconds}s"
   record_event cell app-a-gateway success \
-    "$expected_region" "$expected_cluster" REVIEW
+    "$expected_region" "$expected_cluster" RATES_RETURNED
   wait_for_cell_health "$context" "$recovery_deadline" \
     || fail "$context /health/cell did not recover within ${recovery_timeout_seconds}s"
   wait_for_backend_region "$expected_region" \
@@ -682,7 +632,7 @@ jq -s \
   --arg completed_at "$completed_at" \
   --argjson success_duration "$success_traffic_duration_seconds" '
     {
-      schema_version: 1,
+      schema_version: 2,
       run_id: $run_id,
       project_id: $project_id,
       gcloud_configuration: $configuration,
@@ -703,14 +653,13 @@ jq -e '
   all(.events[];
     (.correlation_id | test("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")) and
     (.trace_id | test("^[0-9a-f]{32}$")) and
-    (.request_id | test("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")) and
     (.region == "us-central1" or .region == "us-east4") and
     (.cluster == "gke-risk-usc1" or .cluster == "gke-risk-use4") and
-    ((.kind == "success" and .http_status == 200) or
-     (.kind == "controlled_error" and .http_status >= 500)))
+    ((.kind == "success" and .http_status == 200 and .decision == "RATES_RETURNED") or
+     (.kind == "controlled_error" and .http_status >= 500 and .decision == "")))
 ' "$manifest_candidate" >/dev/null \
   || fail "the generated traffic manifest is incomplete"
 
 mv -f -- "$manifest_candidate" "$manifest"
-printf 'Generated %s bounded requests for run %s at immutable SHA %s; both cell faults were restored.\n' \
+printf 'Generated %s bounded exchange-rate requests for run %s at immutable SHA %s; both cell faults were restored.\n' \
   "$(jq '.events | length' "$manifest")" "$run_id" "$git_sha"

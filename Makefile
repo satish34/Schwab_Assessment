@@ -24,8 +24,8 @@ export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION DOMAIN_NAME
 export PRIMARY_REGION SECONDARY_REGION MAVEN_IMAGE GCLOUD_IMAGE
 
 .PHONY: help preflight fmt test local-up local-verify bootstrap global clusters
-.PHONY: build deploy-apps wait-negs lb verify seed-traffic verify-bigquery verify-grafana
-.PHONY: test-failover capture-evidence plan-check destroy orphan-check
+.PHONY: build deploy-apps wait-negs lb-plan lb verify seed-traffic verify-bigquery verify-grafana
+.PHONY: verify-error-reporting test-failover capture-evidence plan-check secret-scan destroy orphan-check
 
 help:
 	@printf '%s\n' \
@@ -40,14 +40,17 @@ help:
 	  'build              test, build, and publish immutable images' \
 	  'deploy-apps        deploy both regional Kubernetes overlays' \
 	  'wait-negs          wait for six standalone zonal NEGs' \
+	  'lb-plan            preview the global edge change after the NEG gate' \
 	  'lb                 apply infra/30-lb after the NEG gate' \
 	  'verify             verify clusters, backends, and public API' \
 	  'seed-traffic       generate controlled application traffic' \
 	  'verify-bigquery    run checked-in BigQuery queries' \
 	  'verify-grafana     verify source data and all four live Grafana panels' \
+	  'verify-error-reporting verify grouped App A and App B exceptions' \
 	  'test-failover      run and restore the cell-failover experiment' \
 	  'capture-evidence   save non-secret gate evidence' \
 	  'plan-check         run final Terraform drift checks' \
+	  'secret-scan        scan Git history and the worktree for secrets' \
 	  'destroy            execute the mandatory ordered teardown' \
 	  'orphan-check       report remaining billable resources'
 
@@ -66,7 +69,7 @@ fmt:
 	  --workdir /workspace \
 	  "$(MAVEN_IMAGE)" \
 	  mvn --batch-mode --no-transfer-progress spotless:apply spotless:check
-	@dotnet format apps/app-b-dotnet/AppB.sln --verbosity minimal
+	@cd apps/app-b-dotnet && dotnet format AppB.sln --verbosity minimal
 	@terraform fmt -recursive infra
 	@find scripts -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
 	@git diff --check
@@ -78,8 +81,9 @@ test:
 	  --workdir /workspace \
 	  "$(MAVEN_IMAGE)" \
 	  mvn --batch-mode --no-transfer-progress spotless:check verify
-	@dotnet format apps/app-b-dotnet/AppB.sln --verify-no-changes --no-restore --verbosity minimal
-	@dotnet test apps/app-b-dotnet/AppB.sln --configuration Release --no-restore --nologo
+	@cd apps/app-b-dotnet && dotnet restore AppB.sln --nologo
+	@cd apps/app-b-dotnet && dotnet format AppB.sln --verify-no-changes --no-restore --verbosity minimal
+	@cd apps/app-b-dotnet && dotnet test AppB.sln --configuration Release --no-restore --nologo
 	@kubectl kustomize k8s/overlays/us-central1 >/dev/null
 	@kubectl kustomize k8s/overlays/us-east4 >/dev/null
 
@@ -107,6 +111,9 @@ deploy-apps:
 wait-negs:
 	@bash ./scripts/wait-negs.sh "$(IMAGE_TAG)"
 
+lb-plan:
+	@bash ./scripts/terraform-stack.sh infra/30-lb plan
+
 lb:
 	@bash ./scripts/terraform-stack.sh infra/30-lb apply
 
@@ -124,17 +131,23 @@ verify-bigquery:
 verify-grafana:
 	@bash ./scripts/verify-grafana.sh
 
+verify-error-reporting:
+	@bash ./scripts/verify-error-reporting.sh
+
 test-failover:
 	@bash ./scripts/test-failover.sh "$(IMAGE_TAG)"
 
 capture-evidence:
-	$(call pending_target,capture-evidence)
+	@bash ./scripts/capture-evidence.sh "$(IMAGE_TAG)"
 
 plan-check:
-	$(call pending_target,plan-check)
+	@bash ./scripts/plan-check.sh
+
+secret-scan:
+	@bash ./scripts/secret-scan.sh
 
 destroy:
-	$(call pending_target,destroy)
+	@DESTROY_CONFIRMATION="$(DESTROY_CONFIRMATION)" bash ./scripts/destroy.sh
 
 orphan-check:
-	$(call pending_target,orphan-check)
+	@bash ./scripts/orphan-check.sh

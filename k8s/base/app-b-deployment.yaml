@@ -43,23 +43,23 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            - name: RISK_REGION
+            - name: SERVICE_REGION
               valueFrom:
                 configMapKeyRef:
                   name: runtime-config
-                  key: RISK_REGION
-            - name: RISK_CLUSTER
+                  key: SERVICE_REGION
+            - name: SERVICE_CLUSTER
               valueFrom:
                 configMapKeyRef:
                   name: runtime-config
-                  key: RISK_CLUSTER
+                  key: SERVICE_CLUSTER
             - name: SERVICE_VERSION
               valueFrom:
                 configMapKeyRef:
                   name: runtime-config
                   key: SERVICE_VERSION
             - name: FAULT_CONFIG_PATH
-              value: /etc/risk-faults/faults.json
+              value: /etc/app-b-faults/faults.json
           resources:
             requests:
               cpu: 250m
@@ -98,7 +98,7 @@ spec:
             - name: tmp
               mountPath: /tmp
             - name: fault-config
-              mountPath: /etc/risk-faults
+              mountPath: /etc/app-b-faults
               readOnly: true
       volumes:
         - name: tmp

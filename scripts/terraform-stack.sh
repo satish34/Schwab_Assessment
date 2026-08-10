@@ -80,7 +80,8 @@ export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration T
 trap 'unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr' EXIT
 
 run_terraform() {
-  timeout --foreground --signal=INT "$terraform_timeout" terraform "$@"
+  timeout --foreground --signal=INT --kill-after=15s \
+    "$terraform_timeout" terraform "$@"
 }
 
 run_terraform -chdir="$stack_dir" init -input=false

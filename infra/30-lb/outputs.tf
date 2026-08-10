@@ -24,7 +24,7 @@ output "tls_enabled" {
 
 output "forwarding_rule_names" {
   value = {
-    http  = google_compute_global_forwarding_rule.http.name
+    http  = local.tls_enabled ? null : google_compute_global_forwarding_rule.http[0].name
     https = local.tls_enabled ? google_compute_global_forwarding_rule.https[0].name : null
   }
 }

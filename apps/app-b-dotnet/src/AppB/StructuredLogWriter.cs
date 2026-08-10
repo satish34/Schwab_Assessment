@@ -86,8 +86,8 @@ public sealed class StructuredLogWriter
             _identity.Cluster,
             requestContext.CorrelationId,
             requestContext.TraceId,
-            "/v1/evaluate",
-            "POST",
+            "/internal/exchange-rates",
+            "GET",
             statusCode,
             latencyMs,
             0,
@@ -116,8 +116,8 @@ public sealed class StructuredLogWriter
             _identity.Cluster,
             correlationId,
             traceId,
-            logType is "request" or "dependency_probe" ? "/v1/evaluate" : string.Empty,
-            logType is "request" or "dependency_probe" ? "POST" : string.Empty,
+            logType is "request" or "dependency_probe" ? "/internal/exchange-rates" : string.Empty,
+            logType is "request" or "dependency_probe" ? "GET" : string.Empty,
             statusCode,
             latencyMs,
             0,
@@ -145,7 +145,7 @@ public sealed class StructuredLogWriter
         }
         catch (Exception)
         {
-            // Observability must never fail an evaluation request.
+            // Observability must never fail an exchange-rate request.
         }
     }
 }

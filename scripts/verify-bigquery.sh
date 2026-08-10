@@ -130,7 +130,7 @@ jq -e \
   --arg image_sha "$git_sha" \
   --arg endpoint "$public_endpoint" \
   --argjson max_age "$seed_max_age_seconds" '
-    (.schema_version == 1) and
+    (.schema_version == 2) and
     (.project_id == $project) and
     (.gcloud_configuration == $configuration) and
     (.image_sha == $image_sha) and
@@ -153,8 +153,7 @@ jq -e \
       (.correlation_id | test("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")) and
       (.trace_id | test("^[0-9a-f]{32}$")) and
       ((.kind == "success" and .http_status == 200 and
-        (.decision == "APPROVE" or .decision == "REVIEW" or
-         .decision == "DECLINE")) or
+        .decision == "RATES_RETURNED") or
        (.kind == "controlled_error" and .http_status >= 500 and
         .decision == "")))
   ' "$manifest" >/dev/null \
@@ -162,19 +161,15 @@ jq -e \
 
 jq -e '
   .events as $events |
-  (["APPROVE", "REVIEW", "DECLINE"] | all(.[];
-    . as $decision |
-    any($events[];
-      .path == "global" and .kind == "success" and
-      .decision == $decision))) and
+  any($events[];
+    .path == "global" and .kind == "success" and
+    .decision == "RATES_RETURNED") and
   (["us-central1", "us-east4"] | all(.[];
     . as $region |
-    (["APPROVE", "REVIEW", "DECLINE"] | all(.[];
-      . as $decision |
-      any($events[];
-        .path == "cell" and .target_service == "app-a-gateway" and
-        .kind == "success" and .region == $region and
-        .decision == $decision))) and
+    any($events[];
+      .path == "cell" and .target_service == "app-a-gateway" and
+      .kind == "success" and .region == $region and
+      .decision == "RATES_RETURNED") and
     any($events[];
       .path == "cell" and .target_service == "app-a-gateway" and
       .kind == "controlled_error" and .region == $region) and
@@ -182,7 +177,7 @@ jq -e '
       .path == "cell" and .target_service == "app-b-engine" and
       .kind == "controlled_error" and .region == $region)))
 ' "$manifest" >/dev/null \
-  || fail "the traffic manifest lacks a decision or controlled-error cell"
+  || fail "the traffic manifest lacks an exchange-rate success or controlled-error cell"
 
 mkdir -p "$runtime_dir" "$results_dir"
 git check-ignore --quiet -- "$results_dir" \
@@ -259,6 +254,9 @@ jq -e \
         any($json[]; .name == "cluster" and .type == "STRING") and
         any($json[]; .name == "correlation_id" and .type == "STRING") and
         any($json[]; .name == "trace_id" and .type == "STRING") and
+        any($json[]; .name == "route" and .type == "STRING") and
+        any($json[]; .name == "method" and .type == "STRING") and
+        any($json[]; .name == "decision" and .type == "STRING") and
         any($json[]; .name == "status_code" and .type == "FLOAT") and
         any($json[]; .name == "latency_ms" and .type == "FLOAT") and
         any($json[]; .name == "is_test" and .type == "BOOLEAN")))
@@ -292,6 +290,8 @@ printf '%s\n' \
   '    jsonPayload.service_version AS service_version,' \
   '    jsonPayload.region AS region,' \
   '    jsonPayload.cluster AS cluster,' \
+  '    jsonPayload.route AS route,' \
+  '    jsonPayload.method AS method,' \
   '    jsonPayload.decision AS decision,' \
   '    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code,' \
   '    SAFE_CAST(jsonPayload.latency_ms AS INT64) AS latency_ms,' \
@@ -312,6 +312,9 @@ printf '%s\n' \
   '    l.service = e.target_service AND' \
   '    l.service_version = '"'"$git_sha"'"' AND' \
   '    l.region = e.region AND l.cluster = e.cluster AND' \
+  '    l.method = '"'"GET"'"' AND' \
+  '    ((e.target_service = '"'"app-a-gateway"'"' AND l.route = '"'"/api/exchange-rates"'"') OR' \
+  '     (e.target_service = '"'"app-b-engine"'"' AND l.route = '"'"/internal/exchange-rates"'"')) AND' \
   '    l.trace_id = e.trace_id AND l.latency_ms >= 0 AND' \
   '    l.is_test = FALSE AND' \
   '    ((e.kind = '"'"success"'"' AND l.status_code = 200 AND' \
@@ -321,12 +324,14 @@ printf '%s\n' \
   '  COUNTIF(' \
   '    l.service = '"'"app-a-gateway"'"' AND l.service_version = '"'"$git_sha"'"' AND' \
   '    l.region = e.region AND l.cluster = e.cluster AND' \
+  '    l.route = '"'"/api/exchange-rates"'"' AND l.method = '"'"GET"'"' AND' \
   '    l.trace_id = e.trace_id AND l.status_code = 200 AND' \
   '    l.decision = e.decision AND l.latency_ms >= 0 AND l.is_test = FALSE' \
   '  ) AS app_a_success_rows,' \
   '  COUNTIF(' \
   '    l.service = '"'"app-b-engine"'"' AND l.service_version = '"'"$git_sha"'"' AND' \
   '    l.region = e.region AND l.cluster = e.cluster AND' \
+  '    l.route = '"'"/internal/exchange-rates"'"' AND l.method = '"'"GET"'"' AND' \
   '    l.trace_id = e.trace_id AND l.status_code = 200 AND' \
   '    l.decision = e.decision AND l.latency_ms >= 0 AND l.is_test = FALSE' \
   '  ) AS app_b_success_rows' \
@@ -442,22 +447,17 @@ for sql_file in "${sql_files[@]}"; do
             (["app-a-gateway", "app-b-engine"] |
               all(.[];
                 . as $service |
-                (["APPROVE", "REVIEW", "DECLINE"] |
-                  all(.[];
-                    . as $decision |
-                    any($rows[];
-                      .region == $region and .service == $service and
-                      .decision == $decision and
-                      (.request_count | tonumber) > 0
-                    )
-                  )
+                any($rows[];
+                  .region == $region and .service == $service and
+                  .decision == "RATES_RETURNED" and
+                  (.request_count | tonumber) > 0
                 )
               )
             )
           )
         )
       ' "$query_result" >/dev/null \
-        || fail "$query_name lacks a region, service, or decision group"
+        || fail "$query_name lacks a region, service, or exchange-rate result group"
       ;;
   esac
 done
@@ -469,5 +469,5 @@ for output_file in \
 done
 cp -- "$manifest" "$results_dir/bigquery-seed.json"
 
-printf 'Verified current SHA %s in partitioned BigQuery rows: both regions, both services, three decisions, controlled errors, latency, trace joins, and zero export errors.\n' \
+printf 'Verified current SHA %s in partitioned BigQuery rows: both regions, both services, exchange-rate results, controlled errors, latency, trace joins, and zero export errors.\n' \
   "$git_sha"

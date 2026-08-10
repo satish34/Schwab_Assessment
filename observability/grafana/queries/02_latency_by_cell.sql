@@ -8,7 +8,8 @@ WITH buckets AS (
   WHERE $__timeFilter(timestamp)
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
-    AND jsonPayload.route = '/v1/risk'
+    AND jsonPayload.route = '/api/exchange-rates'
+    AND jsonPayload.method = 'GET'
     AND jsonPayload.latency_ms IS NOT NULL
   GROUP BY time, region, cluster
 )

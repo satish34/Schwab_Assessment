@@ -317,8 +317,8 @@ validate_cell_resources() {
 
   jq -e \
     --arg region "$region" --arg cluster "$cluster" --arg version "$git_sha" '
-      (.data.RISK_REGION == $region) and
-      (.data.RISK_CLUSTER == $cluster) and
+      (.data.SERVICE_REGION == $region) and
+      (.data.SERVICE_CLUSTER == $cluster) and
       (.data.SERVICE_VERSION == $version)
     ' <<<"$runtime_config" >/dev/null || return 1
 
@@ -368,13 +368,7 @@ curl_local_status() {
     --output "$output_file" --write-out '%{http_code}'
   )
 
-  if [[ "$method" == "POST" ]]; then
-    arguments+=(
-      --request POST
-      --header 'Content-Type: application/json'
-      --data-binary "@$repo_root/testdata/request.json"
-    )
-  fi
+  arguments+=(--request "$method")
   status="$(
     curl "${arguments[@]}" \
       "http://127.0.0.1:$active_local_port$route" 2>/dev/null || true
@@ -471,19 +465,26 @@ all_app_b_pods_return() {
 
   for pod in "${pod_names[@]}"; do
     start_port_forward "$context" "pod/$pod" || return 1
-    status="$(curl_local_status POST /v1/evaluate "$response_file")"
+    status="$(curl_local_status GET /internal/exchange-rates "$response_file")"
     if [[ "$status" != "$expected_status" ]]; then
       stop_port_forward
       return 1
     fi
     if [[ "$expected_status" == "200" ]] \
       && ! jq -e \
+        --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
         --arg region "$region" --arg cluster "$cluster" --arg version "$git_sha" '
-          (.requestId == "550e8400-e29b-41d4-a716-446655440000") and
-          (.evaluatedBy.service == "app-b-engine") and
-          (.evaluatedBy.region == $region) and
-          (.evaluatedBy.cluster == $cluster) and
-          (.evaluatedBy.version == $version)
+          (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
+          (.rateSnapshots | length == 10) and
+          all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
+          (.providedBy | keys == ["cluster", "region", "service", "version"]) and
+          .baseCurrency == $expected[0].baseCurrency and
+          .rateSnapshots == $expected[0].rateSnapshots and
+          .disclaimer == $expected[0].disclaimer and
+          .providedBy.service == $expected[0].providedBy.service and
+          .providedBy.region == $region and
+          .providedBy.cluster == $cluster and
+          .providedBy.version == $version
         ' "$response_file" >/dev/null 2>&1; then
       stop_port_forward
       return 1
@@ -608,11 +609,10 @@ sample_public_request() {
   metrics="$(
     curl --silent --show-error --connect-timeout 2 --max-time 12 \
       --output "$response_file" --write-out $'%{http_code}\t%{time_total}' \
-      --request POST "$public_endpoint/v1/risk" \
+      --request GET "$public_endpoint/api/exchange-rates" \
       --header 'Accept: application/json' \
-      --header 'Content-Type: application/json' \
       --header "x-correlation-id: $correlation_id" \
-      --data-binary "@$repo_root/testdata/request.json" 2>/dev/null || true
+      2>/dev/null || true
   )"
   IFS=$'\t' read -r http_status total_seconds <<<"$metrics"
   [[ "$http_status" =~ ^[0-9]{3}$ ]] || http_status=000
@@ -620,19 +620,25 @@ sample_public_request() {
   latency_ms="$(awk -v value="$total_seconds" 'BEGIN { printf "%.0f", value * 1000 }')"
 
   if [[ "$http_status" == "200" ]] \
-    && jq -e --arg version "$git_sha" '
-      (.requestId == "550e8400-e29b-41d4-a716-446655440000") and
-      (.score == 48) and (.decision == "REVIEW") and
-      (.rulesFired == ["CARD_NOT_PRESENT", "AMOUNT_OVER_1000"]) and
-      (.evaluatedBy.service == "app-b-engine") and
-      (.evaluatedBy.version == $version) and
-      ((.evaluatedBy.region == "us-central1" and
-        .evaluatedBy.cluster == "gke-risk-usc1") or
-       (.evaluatedBy.region == "us-east4" and
-        .evaluatedBy.cluster == "gke-risk-use4"))
+    && jq -e \
+      --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
+      --arg version "$git_sha" '
+      (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
+      (.rateSnapshots | length == 10) and
+      all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
+      (.providedBy | keys == ["cluster", "region", "service", "version"]) and
+      .baseCurrency == $expected[0].baseCurrency and
+      .rateSnapshots == $expected[0].rateSnapshots and
+      .disclaimer == $expected[0].disclaimer and
+      .providedBy.service == $expected[0].providedBy.service and
+      .providedBy.version == $version and
+      ((.providedBy.region == "us-central1" and
+        .providedBy.cluster == "gke-risk-usc1") or
+       (.providedBy.region == "us-east4" and
+        .providedBy.cluster == "gke-risk-use4"))
     ' "$response_file" >/dev/null 2>&1; then
-    region="$(jq -r '.evaluatedBy.region' "$response_file")"
-    cluster="$(jq -r '.evaluatedBy.cluster' "$response_file")"
+    region="$(jq -r '.providedBy.region' "$response_file")"
+    cluster="$(jq -r '.providedBy.cluster' "$response_file")"
     valid=true
   fi
 
@@ -896,7 +902,7 @@ write_evidence() {
     || fail "the observed traffic interval was not approximately one second"
 
   printf '%s\n' \
-    'timestamp,http_status,latency_ms,evaluated_region,evaluated_cluster,correlation_id' \
+    'timestamp,http_status,latency_ms,serving_region,serving_cluster,correlation_id' \
     >"$csv_candidate"
   shopt -s nullglob
   row_files=("$traffic_dir"/row-*.csv)
@@ -907,7 +913,7 @@ write_evidence() {
     || fail "the CSV row count does not match the completed traffic metadata"
   awk -F, '
     NR == 1 {
-      if ($0 != "timestamp,http_status,latency_ms,evaluated_region,evaluated_cluster,correlation_id") exit 1
+      if ($0 != "timestamp,http_status,latency_ms,serving_region,serving_cluster,correlation_id") exit 1
       next
     }
     NF != 6 || $2 !~ /^[0-9][0-9][0-9]$/ || $3 !~ /^[0-9]+$/ { exit 1 }
@@ -1027,7 +1033,7 @@ main() {
       || fail "$override_name must be unset so the named gcloud account is authoritative"
   done
   for required_file in \
-    "$repo_root/testdata/request.json" \
+    "$repo_root/testdata/expected-exchange-rates.json" \
     "$repo_root/k8s/faults/healthy.yaml" \
     "$repo_root/k8s/faults/unavailable.yaml"; do
     [[ -f "$required_file" ]] || fail "required file is missing: $required_file"
@@ -1088,9 +1094,9 @@ main() {
   validate_cell_resources gke-risk-use4 \
     || fail "us-east4 baseline resources are not healthy and immutable"
   wait_for_all_app_b_pods_status gke-risk-usc1 200 120 \
-    || fail "us-central1 App B baseline evaluation path is not healthy"
+    || fail "us-central1 App B baseline exchange-rate path is not healthy"
   wait_for_all_app_b_pods_status gke-risk-use4 200 120 \
-    || fail "us-east4 App B baseline evaluation path is not healthy"
+    || fail "us-east4 App B baseline exchange-rate path is not healthy"
   wait_for_all_app_a_pods_state gke-risk-usc1 200 HEALTHY 120 \
     || fail "us-central1 App A Pods do not all report cached cell health"
   wait_for_all_app_a_pods_state gke-risk-use4 200 HEALTHY 120 \
@@ -1107,11 +1113,14 @@ main() {
   jq -e --arg endpoint "$public_endpoint" '
     (.backend_service_name.value == "risk-app-a-gateway-backend") and
     (.public_endpoint.value == $endpoint) and
+    (.tls_enabled.value == true) and
+    ($endpoint == "https://satish.store") and
+    (.forwarding_rule_names.value.http == null) and
+    (.forwarding_rule_names.value.https == "risk-app-a-https") and
     ((.neg_backends.value | length) == 6) and
-    (($endpoint | test("^http://([0-9]{1,3}\\.){3}[0-9]{1,3}$")) or
-     ($endpoint | test("^https://[A-Za-z0-9.-]+$")))
+    ($endpoint | test("^https://[A-Za-z0-9.-]+$"))
   ' <<<"$lb_outputs" >/dev/null \
-    || fail "the Terraform outputs do not describe the frozen public edge"
+    || fail "the Terraform outputs do not describe the frozen HTTPS-only public edge"
 
   traffic_max_seconds=$((test_timeout_seconds + 15))
   start_traffic "$traffic_max_seconds"
@@ -1188,9 +1197,9 @@ main() {
   validate_cell_resources gke-risk-use4 \
     || fail "us-east4 failed the post-fault immutable workload check"
   wait_for_all_app_b_pods_status gke-risk-usc1 200 120 \
-    || fail "us-central1 App B failed the post-fault evaluation check"
+    || fail "us-central1 App B failed the post-fault exchange-rate check"
   wait_for_all_app_b_pods_status gke-risk-use4 200 120 \
-    || fail "us-east4 App B failed the post-fault evaluation check"
+    || fail "us-east4 App B failed the post-fault exchange-rate check"
   wait_for_all_app_a_pods_state gke-risk-usc1 200 HEALTHY 120 \
     || fail "us-central1 failed the post-fault cached cell-health check"
   wait_for_all_app_a_pods_state gke-risk-use4 200 HEALTHY 120 \

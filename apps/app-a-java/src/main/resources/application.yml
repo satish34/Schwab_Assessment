@@ -21,9 +21,9 @@ logging:
   level:
     root: WARN
 
-risk:
-  region: "${RISK_REGION:local}"
-  cluster: "${RISK_CLUSTER:local}"
+exchange:
+  region: "${SERVICE_REGION:local}"
+  cluster: "${SERVICE_CLUSTER:local}"
   service-version: "${SERVICE_VERSION:dev}"
   app-b-base-url: "${APP_B_BASE_URL:http://app-b-engine.risk-system.svc.cluster.local:8080}"
   google-cloud-project: "${GOOGLE_CLOUD_PROJECT:}"

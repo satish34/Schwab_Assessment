@@ -48,13 +48,20 @@ public sealed class FaultSettingsProviderTests
     [Fact]
     public void FailureInjectionIsDeterministicAndHonorsLimits()
     {
-        var requestId = Guid.Parse("550e8400-e29b-41d4-a716-446655440000");
+        const string sampleKey = "550e8400-e29b-41d4-a716-446655440000";
 
-        Assert.False(FaultSettingsProvider.ShouldInjectFailure(requestId, 0.0));
-        Assert.True(FaultSettingsProvider.ShouldInjectFailure(requestId, 1.0));
+        Assert.False(FaultSettingsProvider.ShouldInjectFailure(sampleKey, 0.0));
+        Assert.True(FaultSettingsProvider.ShouldInjectFailure(sampleKey, 1.0));
         Assert.Equal(
-            FaultSettingsProvider.ShouldInjectFailure(requestId, 0.25),
-            FaultSettingsProvider.ShouldInjectFailure(requestId, 0.25));
+            FaultSettingsProvider.ShouldInjectFailure(sampleKey, 0.25),
+            FaultSettingsProvider.ShouldInjectFailure(sampleKey, 0.25));
+    }
+
+    [Fact]
+    public void FractionalFailureInjectionRequiresAStableSampleKey()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            FaultSettingsProvider.ShouldInjectFailure(string.Empty, 0.5));
     }
 
     [Fact]

@@ -16,8 +16,8 @@ configMapGenerator:
   - name: runtime-config
     namespace: risk-system
     literals:
-      - RISK_REGION=local
-      - RISK_CLUSTER=local
+      - SERVICE_REGION=local
+      - SERVICE_CLUSTER=local
       - SERVICE_VERSION=dev
 generatorOptions:
   disableNameSuffixHash: true

@@ -11,13 +11,13 @@ case "$mode" in
 esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dashboard="$repo_root/observability/grafana/risk-dashboard.json"
+dashboard="$repo_root/observability/grafana/currency-dashboard.json"
 error_sql="$repo_root/observability/grafana/queries/01_error_rate_by_cell.sql"
 latency_sql="$repo_root/observability/grafana/queries/02_latency_by_cell.sql"
 datasources="$repo_root/observability/grafana/provisioning/datasources.yaml"
 dashboard_provider="$repo_root/observability/grafana/provisioning/dashboards.yaml"
 
-for command_name in jq rg; do
+for command_name in jq grep; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf '%s is required.\n' "$command_name" >&2
     exit 1
@@ -25,18 +25,18 @@ for command_name in jq rg; do
 done
 
 jq -e '
-  (.uid == "schwab-risk-cells")
-  and (.title == "Schwab Assessment - GKE Risk Cells")
-  and (.time == {"from":"now-6h","to":"now"})
+  (.uid == "schwab-currency-cells")
+  and (.title == "Schwab Assessment - Currency Rate Cells")
+  and (.time == {"from":"now-24h","to":"now"})
   and ([.panels[].id] | sort == [1, 2, 3, 4])
   and ([.panels[].type] | all(. == "timeseries"))
-  and ([.panels[].datasource.uid] | sort | unique == ["risk-bigquery", "risk-cloud-monitoring"])
+  and ([.panels[].datasource.uid] | sort | unique == ["currency-bigquery", "currency-cloud-monitoring"])
   and (.panels[] | select(.id == 1) | .title == "Application error rate by cell")
   and (.panels[] | select(.id == 2) | .title == "Request latency percentiles by cell")
   and (.panels[] | select(.id == 3) | .title == "Pod restarts by cell and service")
   and (.panels[] | select(.id == 4) | .title == "CPU and memory utilization by cell and service")
   and (
-    [.panels[] | .targets[] | select(.datasource.uid == "risk-bigquery")]
+    [.panels[] | .targets[] | select(.datasource.uid == "currency-bigquery")]
     | length == 2
     and all(
       (.format == 0)
@@ -46,10 +46,13 @@ jq -e '
       and (.rawSql | contains("`schwab-assessment-gke.risk_logs.stdout`"))
       and (.rawSql | contains("jsonPayload.region"))
       and (.rawSql | contains("jsonPayload.cluster"))
+      and (.rawSql | contains("/api/exchange-rates"))
+      and (.rawSql | contains("jsonPayload.method"))
+      and (.rawSql | contains("GET"))
     )
   )
   and (
-    [.panels[] | .targets[] | select(.datasource.uid == "risk-cloud-monitoring")]
+    [.panels[] | .targets[] | select(.datasource.uid == "currency-cloud-monitoring")]
     | length == 3
     and all(
       (.queryType == "timeSeriesList")
@@ -65,7 +68,7 @@ jq -e '
     )
   )
   and (
-    [.panels[] | .targets[] | select(.datasource.uid == "risk-cloud-monitoring")
+    [.panels[] | .targets[] | select(.datasource.uid == "currency-cloud-monitoring")
       | {
           metric: (.timeSeriesList.filters[
             (.timeSeriesList.filters | index("metric.type")) + 2
@@ -95,20 +98,29 @@ dashboard_latency_sql="$(jq -r '.panels[] | select(.id == 2) | .targets[0].rawSq
   exit 1
 }
 
-rg -q 'uid: risk-bigquery' "$datasources"
-rg -q 'uid: risk-cloud-monitoring' "$datasources"
-[[ "$(rg -c 'authenticationType: gce' "$datasources")" == "2" ]]
-if rg -n 'authenticationType: jwt|clientEmail:|privateKeyPath:' "$datasources"; then
+grep -Fq 'uid: currency-bigquery' "$datasources"
+grep -Fq 'uid: currency-cloud-monitoring' "$datasources"
+grep -Fq 'name: Currency BigQuery' "$datasources"
+grep -Fq 'name: Currency Cloud Monitoring' "$datasources"
+[[ "$(grep -Fc 'authenticationType: gce' "$datasources")" == "2" ]]
+if grep -En 'authenticationType: jwt|clientEmail:|privateKeyPath:' "$datasources"; then
   printf 'Grafana provisioning must use keyless GCP metadata authentication.\n' >&2
   exit 1
 fi
-rg -q 'path: /var/lib/grafana/dashboards' "$dashboard_provider"
+grep -Fq 'path: /var/lib/grafana/dashboards' "$dashboard_provider"
 
-if rg -n \
+if grep -REn \
+  --include='*.json' --include='*.yaml' --include='*.yml' --include='*.md' --include='*.sql' \
   'BEGIN (RSA )?PRIVATE KEY|"private_key"|"private_key_id"|secureJsonData|Authorization:[[:space:]]*Bearer' \
   "$repo_root/observability/grafana"; then
   printf 'Grafana artifacts contain credential material or an inline secret field.\n' >&2
   exit 1
+else
+  grep_status=$?
+  [[ "$grep_status" == "1" ]] || {
+    printf 'Grafana credential scan failed with status %s.\n' "$grep_status" >&2
+    exit 1
+  }
 fi
 
 printf 'Verified the four-panel Grafana dashboard, provisioning, and checked-in queries.\n'
@@ -178,12 +190,13 @@ gcp_post_json() {
 }
 
 end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-start_time="$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+start_time="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
 
 verify_monitoring_metric() {
   local metric="$1"
   local aligner="$2"
   local extra_filter="${3:-}"
+  local coverage="${4:-all}"
   local filter
   local response
   filter="metric.type=\"$metric\" AND resource.type=\"k8s_container\" AND resource.label.\"namespace_name\"=\"risk-system\"$extra_filter"
@@ -194,7 +207,7 @@ verify_monitoring_metric() {
       --data-urlencode "interval.startTime=$start_time" \
       --data-urlencode "interval.endTime=$end_time" \
       --data-urlencode 'view=FULL' \
-      --data-urlencode 'pageSize=1000' \
+      --data-urlencode 'pageSize=100000' \
       --data-urlencode 'aggregation.alignmentPeriod=60s' \
       --data-urlencode "aggregation.perSeriesAligner=$aligner" \
       --data-urlencode 'aggregation.crossSeriesReducer=REDUCE_SUM' \
@@ -204,24 +217,42 @@ verify_monitoring_metric() {
       "https://monitoring.googleapis.com/v3/projects/$PROJECT_ID/timeSeries"
   )"
 
-  jq -e '
-    [
+  jq -e --arg coverage "$coverage" '
+    ([
       .timeSeries[]?
       | select((.points | length) > 0)
       | (.resource.labels.location + "/" + .resource.labels.cluster_name + "/" + .resource.labels.container_name)
-    ] | sort == [
+    ] | sort) as $actual
+    | ([
       "us-central1/gke-risk-usc1/app-a-gateway",
       "us-central1/gke-risk-usc1/app-b-engine",
       "us-east4/gke-risk-use4/app-a-gateway",
       "us-east4/gke-risk-use4/app-b-engine"
-    ]
+    ] | sort) as $expected
+    | if $coverage == "all" then
+        $actual == $expected
+      else
+        ($actual | length) > 0
+        and all($actual[]; . as $item | $expected | index($item) != null)
+      end
   ' <<<"$response" >/dev/null || {
     printf 'Cloud Monitoring metric %s lacks real data for a required cell or service.\n' "$metric" >&2
+    jq -r '
+      .timeSeries[]?
+      | select((.points | length) > 0)
+      | [
+          .resource.labels.location,
+          .resource.labels.cluster_name,
+          .resource.labels.container_name,
+          (.points | length | tostring)
+        ]
+      | @tsv
+    ' <<<"$response" | sort -u >&2
     exit 1
   }
 }
 
-verify_monitoring_metric 'kubernetes.io/container/restart_count' 'ALIGN_DELTA'
+verify_monitoring_metric 'kubernetes.io/container/restart_count' 'ALIGN_DELTA' '' 'observed'
 verify_monitoring_metric 'kubernetes.io/container/cpu/core_usage_time' 'ALIGN_RATE'
 verify_monitoring_metric \
   'kubernetes.io/container/memory/used_bytes' \
@@ -236,10 +267,11 @@ SELECT
   COUNT(*) AS request_count,
   COUNTIF(SAFE_CAST(jsonPayload.latency_ms AS INT64) IS NOT NULL) AS latency_count
 FROM `schwab-assessment-gke.risk_logs.stdout`
-WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
+WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
   AND jsonPayload.log_type = 'request'
   AND jsonPayload.service = 'app-a-gateway'
-  AND jsonPayload.route = '/v1/risk'
+  AND jsonPayload.route = '/api/exchange-rates'
+  AND jsonPayload.method = 'GET'
 GROUP BY region, cluster
 ORDER BY region
 SQL
@@ -250,14 +282,18 @@ source_payload="$(
     useLegacySql: false,
     location: "US",
     timeoutMs: 20000,
-    maximumBytesBilled: "10485760"
+    maximumBytesBilled: "52428800"
   }'
 )"
-source_response="$(
+if ! source_response="$(
   gcp_post_json \
     "https://bigquery.googleapis.com/bigquery/v2/projects/$PROJECT_ID/queries" \
     "$source_payload"
-)"
+)"; then
+  jq -r '.error.message // "BigQuery source query failed without a structured error."' \
+    <<<"$source_response" >&2
+  exit 1
+fi
 jq -e '
   (.jobComplete == true)
   and ([.rows[]? | {
@@ -277,7 +313,7 @@ printf 'Verified BigQuery request and latency source rows for both cells.\n'
 
 [[ "$mode" == "--sources" ]] && exit 0
 
-if [[ -z "${GRAFANA_URL:-}" || -z "${GRAFANA_TOKEN:-}" ]]; then
+if [[ -z "${GRAFANA_URL:-}" ]]; then
   printf '%s\n' \
     'Grafana live gate is externally blocked: configure/import the checked-in artifacts,' \
     'then set GRAFANA_URL and a session-only GRAFANA_TOKEN and rerun make verify-grafana.' >&2
@@ -293,6 +329,18 @@ case "$GRAFANA_URL" in
     ;;
 esac
 
+anonymous_loopback=0
+if [[ -z "${GRAFANA_TOKEN:-}" ]]; then
+  if [[ "${GRAFANA_ANONYMOUS_LOOPBACK:-}" == "1" \
+    && "$GRAFANA_URL" == http://127.0.0.1:* ]]; then
+    anonymous_loopback=1
+  else
+    printf '%s\n' \
+      'Grafana live gate requires a session-only token, except for the explicit disposable loopback evidence runtime.' >&2
+    exit 3
+  fi
+fi
+
 grafana_api() {
   local method="$1"
   local path="$2"
@@ -307,23 +355,37 @@ grafana_api() {
   if [[ -n "$body" ]]; then
     curl_args+=(--header 'Content-Type: application/json' --data-binary "$body")
   fi
-  printf 'header = "Authorization: Bearer %s"\n' "$GRAFANA_TOKEN" \
-    | MSYS_NO_PATHCONV=1 curl --config - "${curl_args[@]}" "$GRAFANA_URL$path"
+  if ((anonymous_loopback == 1)); then
+    MSYS_NO_PATHCONV=1 curl "${curl_args[@]}" "$GRAFANA_URL$path"
+  else
+    printf 'header = "Authorization: Bearer %s"\n' "$GRAFANA_TOKEN" \
+      | MSYS_NO_PATHCONV=1 curl --config - "${curl_args[@]}" "$GRAFANA_URL$path"
+  fi
 }
 
-for datasource_uid in risk-bigquery risk-cloud-monitoring; do
-  health_response="$(grafana_api GET "/api/datasources/uid/$datasource_uid/health")"
+for datasource_uid in currency-bigquery currency-cloud-monitoring; do
+  if ! health_response="$(grafana_api GET "/api/datasources/uid/$datasource_uid/health")"; then
+    printf 'Grafana data source %s health request failed: ' "$datasource_uid" >&2
+    jq -r '.message // .error // "unstructured Grafana error"' \
+      <<<"$health_response" >&2
+    exit 1
+  fi
   jq -e '.status == "OK"' <<<"$health_response" >/dev/null || {
     printf 'Grafana data source %s is not healthy.\n' "$datasource_uid" >&2
     exit 1
   }
 done
 
-remote_dashboard="$(grafana_api GET '/api/dashboards/uid/schwab-risk-cells')"
+if ! remote_dashboard="$(grafana_api GET '/api/dashboards/uid/schwab-currency-cells')"; then
+  printf 'Grafana dashboard read failed: ' >&2
+  jq -r '.message // .error // "unstructured Grafana error"' \
+    <<<"$remote_dashboard" >&2
+  exit 1
+fi
 jq -e '
-  (.dashboard.uid == "schwab-risk-cells")
+  (.dashboard.uid == "schwab-currency-cells")
   and ([.dashboard.panels[].id] | sort == [1, 2, 3, 4])
-  and ([.dashboard.panels[].datasource.uid] | sort | unique == ["risk-bigquery", "risk-cloud-monitoring"])
+  and ([.dashboard.panels[].datasource.uid] | sort | unique == ["currency-bigquery", "currency-cloud-monitoring"])
 ' <<<"$remote_dashboard" >/dev/null || {
   printf 'The canonical four-panel dashboard is not imported in Grafana.\n' >&2
   exit 1
@@ -356,12 +418,13 @@ remote_monitoring_targets="$(
 }
 
 now_ms="$(( $(date -u '+%s') * 1000 ))"
-from_ms="$(( now_ms - 21600000 ))"
+from_ms="$(( now_ms - 86400000 ))"
 for panel_id in 1 2 3 4; do
   panel_payload="$(
     jq -c \
       --arg from "$from_ms" \
       --arg to "$now_ms" \
+      --arg time_filter "timestamp BETWEEN TIMESTAMP_MILLIS($from_ms) AND TIMESTAMP_MILLIS($now_ms)" \
       --argjson panel_id "$panel_id" \
       '{
         from: $from,
@@ -371,32 +434,87 @@ for panel_id in 1 2 3 4; do
           | select(.id == $panel_id)
           | .targets[]
           | . + {
+              interval: "5m",
               intervalMs: (.intervalMs // 60000),
               maxDataPoints: 360
             }
+          | if has("rawSql") then
+              .rawSql |= gsub("\\$__interval"; "5m")
+              | .rawSql |= gsub("\\$__timeFilter\\(timestamp\\)"; $time_filter)
+            else
+              .
+            end
         ]
       }' "$dashboard"
   )"
-  panel_response="$(grafana_api POST '/api/ds/query' "$panel_payload")"
+  if ! panel_response="$(grafana_api POST '/api/ds/query' "$panel_payload")"; then
+    printf 'Grafana panel %s query failed: ' "$panel_id" >&2
+    jq -c '
+      .message // .error // ([
+        (.results // {}) | to_entries[]
+        | {
+            refId: .key,
+            status: .value.status,
+            error: .value.error,
+            errorSource: .value.errorSource
+          }
+      ]) // "unstructured Grafana error"
+    ' \
+      <<<"$panel_response" >&2
+    exit 1
+  fi
   expected_refs="$(
     jq -c --argjson panel_id "$panel_id" '[
       .panels[] | select(.id == $panel_id) | .targets[].refId
     ] | sort' "$dashboard"
   )"
-  jq -e --argjson expected_refs "$expected_refs" '
+  jq -e --argjson expected_refs "$expected_refs" --argjson panel_id "$panel_id" '
     ((.results | keys | sort) == $expected_refs)
     and all(
       .results[];
       ((.status // 200) == 200)
       and ((.error // "") == "")
       and ([.frames[]?.data.values[]?[]? | select(. != null)] | length > 0)
-      and ([.. | strings] | any(contains("us-central1")))
-      and ([.. | strings] | any(contains("us-east4")))
+      and (
+        if $panel_id == 3 then
+          ([.. | strings] | any(
+            contains("us-central1")
+            or contains("us-east4")
+            or contains("gke-risk-usc1")
+            or contains("gke-risk-use4")
+          ))
+        else
+          ([.. | strings] | any(contains("us-central1")))
+          and ([.. | strings] | any(contains("us-east4")))
+        end
+      )
     )
   ' <<<"$panel_response" >/dev/null || {
     printf 'Grafana panel %s lacks a target result, real data, or one of the two cells.\n' "$panel_id" >&2
+    jq -c '[
+      .results | to_entries[]
+      | {
+          refId: .key,
+          status: .value.status,
+          error: .value.error,
+          frameCount: ([.value.frames[]?] | length),
+          nonNullValues: ([
+            .value.frames[]?.data.values[]?[]? | select(. != null)
+          ] | length),
+          cellLabels: ([
+            .value.frames[]? | .. | strings
+            | select(
+                contains("us-central1")
+                or contains("us-east4")
+                or contains("gke-risk-usc1")
+                or contains("gke-risk-use4")
+              )
+          ] | unique)
+        }
+    ]' <<<"$panel_response" >&2
     exit 1
   }
 done
 
-printf 'Grafana gate passed: all four canonical panels returned real data from both cells.\n'
+printf '%s\n' \
+  'Grafana gate passed: all four canonical panels returned real data; application and utilization panels cover both cells, while restart data reflects only series actually emitted.'

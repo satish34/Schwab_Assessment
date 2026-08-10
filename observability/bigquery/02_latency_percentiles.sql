@@ -6,7 +6,8 @@ WITH buckets AS (
   WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
-    AND jsonPayload.route = '/v1/risk'
+    AND jsonPayload.route = '/api/exchange-rates'
+    AND jsonPayload.method = 'GET'
     AND jsonPayload.latency_ms IS NOT NULL
   GROUP BY minute
 )

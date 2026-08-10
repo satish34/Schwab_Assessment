@@ -1,0 +1,455 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Two-cell application and GKE health from BigQuery and Cloud Monitoring.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "currency-bigquery"
+      },
+      "description": "App A /api/exchange-rates 5xx percentage from structured request logs.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "currency-bigquery"
+          },
+          "editorMode": "code",
+          "format": 0,
+          "location": "US",
+          "rawQuery": true,
+          "rawSql": "WITH requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n)\nSELECT\n  time,\n  CONCAT(region, ' / ', cluster) AS cell,\n  100 * SAFE_DIVIDE(COUNTIF(status_code >= 500), COUNT(*)) AS error_rate_pct\nFROM requests\nGROUP BY time, region, cluster\nORDER BY time, cell;",
+          "refId": "A"
+        }
+      ],
+      "title": "Application error rate by cell",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "currency-bigquery"
+      },
+      "description": "App A public-request p50, p95, and p99 latency from structured logs.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "currency-bigquery"
+          },
+          "editorMode": "code",
+          "format": 0,
+          "location": "US",
+          "rawQuery": true,
+          "rawSql": "WITH buckets AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    APPROX_QUANTILES(SAFE_CAST(jsonPayload.latency_ms AS INT64), 100) AS quantiles\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n    AND jsonPayload.latency_ms IS NOT NULL\n  GROUP BY time, region, cluster\n)\nSELECT time, CONCAT(region, ' / ', cluster, ' / p50') AS series, quantiles[OFFSET(50)] AS latency_ms\nFROM buckets\nUNION ALL\nSELECT time, CONCAT(region, ' / ', cluster, ' / p95') AS series, quantiles[OFFSET(95)] AS latency_ms\nFROM buckets\nUNION ALL\nSELECT time, CONCAT(region, ' / ', cluster, ' / p99') AS series, quantiles[OFFSET(99)] AS latency_ms\nFROM buckets\nORDER BY time, series;",
+          "refId": "A"
+        }
+      ],
+      "title": "Request latency percentiles by cell",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "currency-cloud-monitoring"
+      },
+      "description": "Container restart deltas grouped by cell and service.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 45,
+            "lineWidth": 1,
+            "pointSize": 3,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aliasBy": "{{resource.label.location}} / {{resource.label.cluster_name}} / {{resource.label.container_name}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "currency-cloud-monitoring"
+          },
+          "intervalMs": 60000,
+          "queryType": "timeSeriesList",
+          "refId": "A",
+          "timeSeriesList": {
+            "alignmentPeriod": "cloud-monitoring-auto",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "filters": [
+              "metric.type",
+              "=",
+              "kubernetes.io/container/restart_count",
+              "AND",
+              "resource.type",
+              "=",
+              "k8s_container",
+              "AND",
+              "resource.label.namespace_name",
+              "=",
+              "risk-system"
+            ],
+            "groupBys": [
+              "resource.label.location",
+              "resource.label.cluster_name",
+              "resource.label.container_name"
+            ],
+            "perSeriesAligner": "ALIGN_DELTA",
+            "preprocessor": "none",
+            "projectName": "schwab-assessment-gke",
+            "view": "FULL"
+          }
+        }
+      ],
+      "title": "Pod restarts by cell and service",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "currency-cloud-monitoring"
+      },
+      "description": "CPU cores and non-evictable memory grouped by cell and service.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^CPU "
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "cores"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^Memory "
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "aliasBy": "CPU {{resource.label.location}} / {{resource.label.cluster_name}} / {{resource.label.container_name}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "currency-cloud-monitoring"
+          },
+          "intervalMs": 60000,
+          "queryType": "timeSeriesList",
+          "refId": "A",
+          "timeSeriesList": {
+            "alignmentPeriod": "cloud-monitoring-auto",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "filters": [
+              "metric.type",
+              "=",
+              "kubernetes.io/container/cpu/core_usage_time",
+              "AND",
+              "resource.type",
+              "=",
+              "k8s_container",
+              "AND",
+              "resource.label.namespace_name",
+              "=",
+              "risk-system"
+            ],
+            "groupBys": [
+              "resource.label.location",
+              "resource.label.cluster_name",
+              "resource.label.container_name"
+            ],
+            "perSeriesAligner": "ALIGN_RATE",
+            "preprocessor": "none",
+            "projectName": "schwab-assessment-gke",
+            "view": "FULL"
+          }
+        },
+        {
+          "aliasBy": "Memory {{resource.label.location}} / {{resource.label.cluster_name}} / {{resource.label.container_name}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "currency-cloud-monitoring"
+          },
+          "intervalMs": 60000,
+          "queryType": "timeSeriesList",
+          "refId": "B",
+          "timeSeriesList": {
+            "alignmentPeriod": "cloud-monitoring-auto",
+            "crossSeriesReducer": "REDUCE_SUM",
+            "filters": [
+              "metric.type",
+              "=",
+              "kubernetes.io/container/memory/used_bytes",
+              "AND",
+              "resource.type",
+              "=",
+              "k8s_container",
+              "AND",
+              "resource.label.namespace_name",
+              "=",
+              "risk-system",
+              "AND",
+              "metric.label.memory_type",
+              "=",
+              "non-evictable"
+            ],
+            "groupBys": [
+              "resource.label.location",
+              "resource.label.cluster_name",
+              "resource.label.container_name"
+            ],
+            "perSeriesAligner": "ALIGN_MEAN",
+            "preprocessor": "none",
+            "projectName": "schwab-assessment-gke",
+            "view": "FULL"
+          }
+        }
+      ],
+      "title": "CPU and memory utilization by cell and service",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": [
+    "schwab-assessment",
+    "gke",
+    "currency-rates"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Schwab Assessment - Currency Rate Cells",
+  "uid": "schwab-currency-cells",
+  "version": 1,
+  "weekStart": ""
+}

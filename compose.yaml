@@ -2,16 +2,16 @@ name: schwab-assessment
 
 services:
   app-b-engine:
-    image: app-b:${SERVICE_VERSION:-local}
+    image: app-b:${SERVICE_VERSION:?SERVICE_VERSION is required}
     build:
       context: ./apps/app-b-dotnet
     environment:
       ASPNETCORE_URLS: http://0.0.0.0:8080
-      FAULT_CONFIG_PATH: /etc/risk-faults/faults.json
+      FAULT_CONFIG_PATH: /etc/app-b-faults/faults.json
       GOOGLE_CLOUD_PROJECT: ${PROJECT_ID:-schwab-assessment-gke}
-      RISK_CLUSTER: local-compose
-      RISK_REGION: us-central1
-      SERVICE_VERSION: ${SERVICE_VERSION:-local}
+      SERVICE_CLUSTER: local-compose
+      SERVICE_REGION: us-central1
+      SERVICE_VERSION: ${SERVICE_VERSION:?SERVICE_VERSION is required}
     expose:
       - "8080"
     healthcheck:
@@ -28,7 +28,7 @@ services:
       start_period: 2s
     init: true
     networks:
-      - risk-local
+      - currency-local
     pids_limit: 256
     read_only: true
     security_opt:
@@ -42,13 +42,13 @@ services:
     volumes:
       - type: bind
         source: ${LOCAL_FAULT_DIR:-./.tmp/local-integration/faults}
-        target: /etc/risk-faults
+        target: /etc/app-b-faults
         read_only: true
         bind:
           create_host_path: false
 
   app-a-gateway:
-    image: app-a:${SERVICE_VERSION:-local}
+    image: app-a:${SERVICE_VERSION:?SERVICE_VERSION is required}
     build:
       context: ./apps/app-a-java
     depends_on:
@@ -57,9 +57,9 @@ services:
     environment:
       APP_B_BASE_URL: http://app-b-engine:8080
       GOOGLE_CLOUD_PROJECT: ${PROJECT_ID:-schwab-assessment-gke}
-      RISK_CLUSTER: local-compose
-      RISK_REGION: us-central1
-      SERVICE_VERSION: ${SERVICE_VERSION:-local}
+      SERVICE_CLUSTER: local-compose
+      SERVICE_REGION: us-central1
+      SERVICE_VERSION: ${SERVICE_VERSION:?SERVICE_VERSION is required}
     ports:
       - "127.0.0.1:${LOCAL_APP_A_PORT:?LOCAL_APP_A_PORT is required}:8080"
     healthcheck:
@@ -76,7 +76,7 @@ services:
       start_period: 5s
     init: true
     networks:
-      - risk-local
+      - currency-local
     pids_limit: 256
     read_only: true
     security_opt:
@@ -89,5 +89,5 @@ services:
     user: "10001:10001"
 
 networks:
-  risk-local:
+  currency-local:
     driver: bridge

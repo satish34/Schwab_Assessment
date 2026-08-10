@@ -1,0 +1,22 @@
+{
+  "baseCurrency": "USD",
+  "rateSnapshots": [
+    { "EUR": 0.92, "GBP": 0.78, "JPY": 149.50 },
+    { "EUR": 0.93, "GBP": 0.79, "JPY": 150.10 },
+    { "EUR": 0.91, "GBP": 0.77, "JPY": 148.90 },
+    { "EUR": 0.92, "GBP": 0.79, "JPY": 149.80 },
+    { "EUR": 0.93, "GBP": 0.78, "JPY": 149.20 },
+    { "EUR": 0.91, "GBP": 0.78, "JPY": 150.00 },
+    { "EUR": 0.92, "GBP": 0.77, "JPY": 149.10 },
+    { "EUR": 0.93, "GBP": 0.77, "JPY": 149.70 },
+    { "EUR": 0.91, "GBP": 0.79, "JPY": 149.40 },
+    { "EUR": 0.92, "GBP": 0.78, "JPY": 149.90 }
+  ],
+  "disclaimer": "Synthetic demonstration rates - not for financial use.",
+  "providedBy": {
+    "service": "app-b-engine",
+    "region": "<SERVICE_REGION>",
+    "cluster": "<SERVICE_CLUSTER>",
+    "version": "<SERVICE_VERSION>"
+  }
+}

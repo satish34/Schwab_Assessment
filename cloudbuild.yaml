@@ -135,5 +135,5 @@ options:
 timeout: 1800s
 
 tags:
-  - risk-assessment
+  - currency-assessment
   - immutable-images

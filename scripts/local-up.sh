@@ -34,8 +34,13 @@ allocate_loopback_port() {
   fail "PowerShell or Python 3 is required to allocate a loopback port"
 }
 
-service_version="$(git -C "$repo_root" rev-parse HEAD)"
-[[ "$service_version" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve a full Git SHA"
+head_version="$(git -C "$repo_root" rev-parse HEAD)"
+[[ "$head_version" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve a full Git SHA"
+if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]]; then
+  service_version="local-${head_version:0:12}-dirty"
+else
+  service_version="$head_version"
+fi
 local_app_a_port="$(allocate_loopback_port)"
 [[ "$local_app_a_port" =~ ^[0-9]+$ ]] \
   && ((local_app_a_port >= 1024 && local_app_a_port <= 65535)) \
@@ -74,4 +79,7 @@ binding="$(docker compose --env-file "$compose_env" port app-a-gateway 8080 | tr
 
 printf 'Local stack is healthy.\n'
 printf 'Service version: %s\n' "$service_version"
+if [[ "$service_version" == local-*-dirty ]]; then
+  printf 'Source state: uncommitted local review (not deployable)\n'
+fi
 printf 'App A endpoint: http://%s\n' "$binding"

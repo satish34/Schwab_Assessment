@@ -9,6 +9,7 @@
 *.credentials.json
 service-account*.json
 grafana-key*.json
+actual_assign*.pdf
 .gcloud/
 
 # Terraform
@@ -35,6 +36,10 @@ override.tf.json
 **/target/
 .mvn/timing.properties
 
+# Python tooling
+__pycache__/
+*.pyc
+
 # .NET
 **/bin/
 **/obj/
@@ -58,6 +63,8 @@ Thumbs.db
 
 # Evidence working files that may contain transient command output
 evidence/tmp/
+output/playwright/
+.playwright-cli/
 
 # Private interview working notes (never commit)
 .private/INTERVIEW_FOLLOWUP_NOTES.md

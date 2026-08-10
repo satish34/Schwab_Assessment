@@ -7,8 +7,8 @@ configMapGenerator:
     namespace: risk-system
     behavior: replace
     literals:
-      - RISK_REGION=us-east4
-      - RISK_CLUSTER=gke-risk-use4
+      - SERVICE_REGION=us-east4
+      - SERVICE_CLUSTER=gke-risk-use4
       - SERVICE_VERSION=GIT_SHA
 generatorOptions:
   disableNameSuffixHash: true

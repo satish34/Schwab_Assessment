@@ -11,11 +11,11 @@
     <relativePath/>
   </parent>
 
-  <groupId>com.schwab.risk</groupId>
+  <groupId>com.schwab.exchange</groupId>
   <artifactId>app-a-gateway</artifactId>
   <version>0.0.1-SNAPSHOT</version>
   <name>app-a-gateway</name>
-  <description>Public risk gateway for the GKE assessment</description>
+  <description>Public exchange-rate gateway for the GKE assessment</description>
 
   <properties>
     <java.version>21</java.version>

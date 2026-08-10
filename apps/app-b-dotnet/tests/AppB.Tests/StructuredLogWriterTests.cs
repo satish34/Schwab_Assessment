@@ -10,7 +10,7 @@ public sealed class StructuredLogWriterTests
     {
         using var output = new StringWriter();
         var logger = new StructuredLogWriter(
-            new AppIdentity("us-central1", "gke-risk-usc1", "abc123", "test-project"),
+            new AppIdentity("us-central1", "gke-currency-usc1", "abc123", "test-project"),
             output);
 
         logger.WriteSchemaSeed();
@@ -34,7 +34,7 @@ public sealed class StructuredLogWriterTests
     {
         using var output = new StringWriter();
         var logger = new StructuredLogWriter(
-            new AppIdentity("us-central1", "gke-risk-usc1", "abc123", "test-project"),
+            new AppIdentity("us-central1", "gke-currency-usc1", "abc123", "test-project"),
             output);
         var context = new RequestContext(
             "550e8400-e29b-41d4-a716-446655440000",
@@ -42,7 +42,14 @@ public sealed class StructuredLogWriterTests
             false,
             new Dictionary<string, string[]>());
 
-        logger.WriteRequest("INFO", "risk evaluation completed", "request", context, 200, 42, "REVIEW");
+        logger.WriteRequest(
+            "INFO",
+            "exchange rates returned",
+            "request",
+            context,
+            200,
+            42,
+            "RATES_RETURNED");
 
         using var document = JsonDocument.Parse(output.ToString());
         var root = document.RootElement;
@@ -53,6 +60,10 @@ public sealed class StructuredLogWriterTests
             root.GetProperty("logging.googleapis.com/trace").GetString());
         Assert.Equal(42, root.GetProperty("latency_ms").GetInt64());
         Assert.Equal(200, root.GetProperty("status_code").GetInt32());
+        Assert.Equal("/internal/exchange-rates", root.GetProperty("route").GetString());
+        Assert.Equal("GET", root.GetProperty("method").GetString());
+        Assert.Equal("RATES_RETURNED", root.GetProperty("decision").GetString());
+        Assert.Equal(19, root.EnumerateObject().Count());
     }
 
     [Fact]
@@ -60,18 +71,18 @@ public sealed class StructuredLogWriterTests
     {
         using var output = new StringWriter();
         var logger = new StructuredLogWriter(
-            new AppIdentity("us-central1", "gke-risk-usc1", "abc123", "test-project"),
+            new AppIdentity("us-central1", "gke-currency-usc1", "abc123", "test-project"),
             output);
 
         logger.WriteException(
-            "risk evaluation failed",
+            "exchange-rate request failed",
             "request",
             "550e8400-e29b-41d4-a716-446655440000",
             "0123456789abcdef0123456789abcdef",
             503,
             17,
             string.Empty,
-            "controlled_test_error",
+            "injected_fault",
             CaptureException());
 
         var lines = output.ToString().Split(
@@ -108,7 +119,9 @@ public sealed class StructuredLogWriterTests
         Assert.Equal("ERROR", root.GetProperty("severity").GetString());
         var stackTrace = root.GetProperty("stack_trace").GetString();
         Assert.False(string.IsNullOrWhiteSpace(stackTrace));
-        Assert.Contains("System.InvalidOperationException: controlled test failure", stackTrace);
+        Assert.Contains(
+            "AppB.InjectedExchangeRateFaultException: A configured exchange-rate fault was injected.",
+            stackTrace);
         Assert.Contains(" at AppB.Tests.StructuredLogWriterTests.CaptureException()", stackTrace);
     }
 
@@ -116,9 +129,9 @@ public sealed class StructuredLogWriterTests
     {
         try
         {
-            throw new InvalidOperationException("controlled test failure");
+            throw new InjectedExchangeRateFaultException();
         }
-        catch (InvalidOperationException exception)
+        catch (InjectedExchangeRateFaultException exception)
         {
             return exception;
         }

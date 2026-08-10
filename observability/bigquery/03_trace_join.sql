@@ -11,6 +11,8 @@ WITH app_a AS (
   WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
+    AND jsonPayload.route = '/api/exchange-rates'
+    AND jsonPayload.method = 'GET'
 ),
 app_b AS (
   SELECT
@@ -25,6 +27,8 @@ app_b AS (
   WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-b-engine'
+    AND jsonPayload.route = '/internal/exchange-rates'
+    AND jsonPayload.method = 'GET'
 )
 SELECT
   app_a.timestamp AS app_a_timestamp,
