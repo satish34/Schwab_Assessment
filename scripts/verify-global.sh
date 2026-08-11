@@ -33,6 +33,8 @@ node_use4="risk-gke-use4-nodes@$PROJECT_ID.iam.gserviceaccount.com"
 build_sa="risk-cloud-build@$PROJECT_ID.iam.gserviceaccount.com"
 grafana_sa="grafana-reader@$PROJECT_ID.iam.gserviceaccount.com"
 app_a_caller_sa="currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com"
+app_a_deployer_sa="currency-app-a-deployer@$PROJECT_ID.iam.gserviceaccount.com"
+app_b_deployer_sa="currency-app-b-deployer@$PROJECT_ID.iam.gserviceaccount.com"
 
 iamcredentials_enabled="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" --project="$PROJECT_ID" \
@@ -53,6 +55,8 @@ jq -e \
   --arg build "$build_sa" \
   --arg grafana "$grafana_sa" \
   --arg app_a_caller "$app_a_caller_sa" \
+  --arg app_a_deployer "$app_a_deployer_sa" \
+  --arg app_b_deployer "$app_b_deployer_sa" \
   '
     (.project_id.value == $project)
     and (.project_number.value | test("^[0-9]+$"))
@@ -77,6 +81,11 @@ jq -e \
     })
     and (.build_service_account_email.value == $build)
     and (.app_a_caller_service_account_email.value == $app_a_caller)
+    and (.app_deployer_service_account_emails.value == {
+      "app_a": $app_a_deployer,
+      "app_b": $app_b_deployer
+    })
+    and (has("app_developer_service_account_emails") | not)
     and (.build_source_bucket.value == ($project + "_cloudbuild"))
     and (.grafana_reader_email.value == $grafana)
   ' <<<"$outputs_json" >/dev/null || {
@@ -222,6 +231,9 @@ jq -e \
   --arg build "serviceAccount:$build_sa" \
   --arg grafana "serviceAccount:$grafana_sa" \
   --arg app_a_caller "serviceAccount:$app_a_caller_sa" \
+  --arg app_a_deployer "serviceAccount:$app_a_deployer_sa" \
+  --arg app_b_deployer "serviceAccount:$app_b_deployer_sa" \
+  --arg operator "user:$expected_account" \
   --arg grafana_metadata "projects/$PROJECT_ID/roles/grafanaProjectReader" \
   '
     def roles_for($member):
@@ -232,8 +244,11 @@ jq -e \
     and (roles_for($build) == ["roles/logging.logWriter"])
     and (roles_for($grafana) == ([$grafana_metadata, "roles/bigquery.jobUser", "roles/monitoring.viewer"] | sort))
     and (roles_for($app_a_caller) == [])
+    and (roles_for($app_a_deployer) == ["roles/container.clusterViewer"])
+    and (roles_for($app_b_deployer) == ["roles/container.clusterViewer"])
+    and (roles_for($operator) == ["roles/owner"])
   ' <<<"$project_policy" >/dev/null || {
-    printf 'Default, node, build, dashboard, or caller project IAM does not match the least-privilege contract.\n' >&2
+    printf 'Default, node, build, dashboard, caller, deployer, or operator project IAM does not match the least-privilege contract.\n' >&2
     exit 1
   }
 
@@ -323,8 +338,11 @@ jq -e \
     (.destination == $destination)
     and (.bigqueryOptions.usePartitionedTables == true)
     and (.writerIdentity | startswith("serviceAccount:"))
+    and (.filter | contains("resource.labels.namespace_name=\"currency-app-a\""))
+    and (.filter | contains("resource.labels.namespace_name=\"currency-app-b\""))
+    and ((.filter | contains("resource.labels.namespace_name=\"risk-system\"")) | not)
   ' <<<"$sink_json" >/dev/null || {
-    printf 'The application log sink destination, partitioning, or writer is invalid.\n' >&2
+    printf 'The application log sink destination, two-namespace filter, partitioning, or writer is invalid.\n' >&2
     exit 1
   }
 
@@ -374,8 +392,24 @@ jq -e --arg operator "user:$expected_account" '
     | select(.role == "roles/iam.serviceAccountTokenCreator")
     | .members[]?
   ] | sort) == [$operator]
+  and ([
+    .bindings[]?
+    | select(.role != "roles/iam.serviceAccountTokenCreator")
+  ] | length == 0)
 ' <<<"$grafana_service_account_policy" >/dev/null || {
   printf 'Grafana token minting is not restricted to the assessment operator.\n' >&2
+  exit 1
+}
+
+build_service_account_policy="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" \
+    iam service-accounts get-iam-policy "$build_sa" \
+    --project="$PROJECT_ID" \
+    --format=json
+)"
+jq -e '([.bindings[]?] | length) == 0' \
+  <<<"$build_service_account_policy" >/dev/null || {
+  printf 'The Cloud Build service account has an unintended resource-level impersonation binding.\n' >&2
   exit 1
 }
 
@@ -386,7 +420,7 @@ app_a_caller_policy="$(
     --format=json
 )"
 jq -e \
-  --arg ksa "serviceAccount:$PROJECT_ID.svc.id.goog[risk-system/app-a-gateway]" '
+  --arg ksa "serviceAccount:$PROJECT_ID.svc.id.goog[currency-app-a/app-a-gateway]" '
   ([
     .bindings[]?
     | select(.role == "roles/iam.workloadIdentityUser")
@@ -395,6 +429,50 @@ jq -e \
   and ([.bindings[]? | select(.role != "roles/iam.workloadIdentityUser")] | length == 0)
 ' <<<"$app_a_caller_policy" >/dev/null || {
   printf 'App A caller impersonation is not restricted to its exact Kubernetes service account.\n' >&2
+  exit 1
+}
+
+verify_operator_token_creator() {
+  local account="$1"
+  local policy
+  policy="$(
+    gcloud --configuration="$GCLOUD_CONFIGURATION" \
+      iam service-accounts get-iam-policy "$account" \
+      --project="$PROJECT_ID" \
+      --format=json
+  )"
+  jq -e --arg operator "user:$expected_account" '
+    ([
+      .bindings[]?
+      | select(.role == "roles/iam.serviceAccountTokenCreator")
+      | .members[]?
+    ] | sort) == [$operator]
+    and ([
+      .bindings[]?
+      | select(.role != "roles/iam.serviceAccountTokenCreator")
+    ] | length == 0)
+  ' <<<"$policy" >/dev/null
+}
+
+for account in "$app_a_deployer_sa" "$app_b_deployer_sa"; do
+  verify_operator_token_creator "$account" || {
+    printf 'Short-lived impersonation for %s is not restricted to %s.\n' \
+      "$account" "$expected_account" >&2
+    exit 1
+  }
+done
+
+service_accounts_json="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" \
+    iam service-accounts list --project="$PROJECT_ID" --format=json
+)"
+jq -e '
+  [.[].email | select(
+    startswith("currency-app-a-dev@") or
+    startswith("currency-app-b-dev@")
+  )] | length == 0
+' <<<"$service_accounts_json" >/dev/null || {
+  printf 'A developer identity still has production GCP access; Dev must remain repo/PR and non-production only.\n' >&2
   exit 1
 }
 
@@ -424,11 +502,13 @@ verify_no_user_keys() {
   [[ -z "$keys" ]]
 }
 
-for account in "$node_usc1" "$node_use4" "$build_sa" "$grafana_sa" "$app_a_caller_sa"; do
+for account in \
+  "$node_usc1" "$node_use4" "$build_sa" "$grafana_sa" "$app_a_caller_sa" \
+  "$app_a_deployer_sa" "$app_b_deployer_sa"; do
   verify_no_user_keys "$account" || {
     printf 'User-managed key found on %s.\n' "$account" >&2
     exit 1
   }
 done
 
-printf 'Verified 10-global outputs, live resources, and scoped IAM.\n'
+printf 'Verified no production Dev identity and exact Ops, SRE assessment-read, CI/CD, runtime, and deployer IAM mappings.\n'

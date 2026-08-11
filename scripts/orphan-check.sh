@@ -194,7 +194,7 @@ fi
 
 record_names assessment_service_accounts "$(
   gcloud_scoped iam service-accounts list --format='value(email)' \
-    | grep -E '^(risk-gke-usc1-nodes|risk-gke-use4-nodes|risk-cloud-build|grafana-reader|currency-app-a-caller)@' \
+    | grep -E '^(risk-gke-usc1-nodes|risk-gke-use4-nodes|risk-cloud-build|grafana-reader|currency-app-a-caller|currency-app-a-deployer|currency-app-b-deployer|currency-app-a-dev|currency-app-b-dev)@' \
     || true
 )"
 record_names assessment_log_sinks "$(

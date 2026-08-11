@@ -32,11 +32,12 @@ backend and a managed CI identity.
 
 Implemented controls include private GKE nodes, an administrator-only control
 plane `/32`, GKE Workload Identity Federation, Google-signed App A service
-tokens, scoped service accounts, a private App B ClusterIP, ingress
-NetworkPolicy, hardened Pod/container security contexts, immutable full-SHA
-tags, and no user-managed service-account keys. App B returns `401` for a
-missing token and validates the signature and caller claims for authenticated
-requests.
+tokens, separate application namespaces, namespace-scoped deployer and
+RBAC, quotas, no developer production principal, a private App B ClusterIP,
+ingress NetworkPolicy,
+hardened Pod/container security contexts, immutable full-SHA tags, and no
+user-managed service-account keys. App B returns `401` for a missing token and
+validates the signature and caller claims for authenticated requests.
 
 The image gate blocks every fixable HIGH or CRITICAL vulnerability. App A had
 no HIGH or CRITICAL findings. App B's Microsoft Debian runtime base still
@@ -55,7 +56,8 @@ the scan before promotion.
 | Default-deny egress | Untested DNS, metadata, identity, and telemetry exceptions can break Autopilot workloads | Inventory destinations, allow only verified paths, then enforce and retest |
 | Service mesh and mTLS | App A-to-App B stays inside one cell and the feature was optional | Add only with an identity, certificate rotation, and operational ownership model |
 | Binary Authorization enforcement and signed attestations | The opt-in allowlist is disabled live and, even when enabled, does not prove who built an allowed image | Enable only after an in-place plan and cost approval; then add attestations tied to the trusted build identity |
-| Shared VPC and enterprise role separation | The Gmail account has no GCP Organization/folder hierarchy | Move networking and CI/deploy duties into separate projects and identities |
+| Hard tenant isolation | Both trusted app teams share clusters, project, VPC, build identity, registry, owner access, and observability | Use separate projects/clusters and per-team build repositories for mutually untrusted or regulated workloads |
+| Full enterprise role separation | The Gmail account has no GCP Organization/folder hierarchy; Ops is still the project Owner | Bind Dev, Ops, SRE, and CI/CD groups through Cloud Identity and remove standing Owner access |
 | Remote Terraform state | Local ignored state met the single-operator deadline | Use a versioned remote backend with scoped CI access and recovery testing |
 | NAT, proxy-only subnet, and private service access | No arbitrary internet egress, proxy-only load balancer, or managed private service needs them | Add only for a verified dependency and include its cost/failure path |
 | Database, cache, queue, and backups | The synthetic currency provider is intentionally stateless and has no persistent volume | Choose services from real durability and consistency requirements; test regional recovery |
@@ -64,6 +66,9 @@ the scan before promotion.
 | Durable shared Grafana hosting | The assessment uses a bounded local evidence runtime rather than exposing telemetry publicly | Use Grafana Cloud or a private hosted instance with SSO, a keyless reader identity, and audited Viewer access |
 
 The surviving cell handled the bounded synthetic test. That does not prove
-production capacity or an SLO. Before production, pre-provision one-region
-peak capacity, test longer failures and deploy rollbacks, and define recovery
-and error-budget targets from measured demand.
+production capacity, zero downtime, or an SLO. Before production,
+pre-provision one-region peak capacity, test longer failures and independent
+rollbacks, and define recovery and error-budget targets from measured demand.
+Capped retries for idempotent GETs with exponential backoff and jitter, plus
+faster health convergence, can reduce transition errors but cannot guarantee
+that every in-flight request survives.

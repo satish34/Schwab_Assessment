@@ -12,19 +12,24 @@ expected_account="satish.cse7@gmail.com"
 backend_name="risk-app-a-gateway-backend"
 health_check_name="risk-app-a-cell-health"
 runtime_dir="$repo_root/.tmp"
-kubeconfig="$runtime_dir/kubeconfig-schwab-assessment"
+kubeconfig="${VERIFIER_KUBECONFIG:-$runtime_dir/kubeconfig-verifier}"
 work_dir=""
 health_timeout_seconds="${LB_HEALTH_TIMEOUT_SECONDS:-900}"
 health_poll_seconds="${LB_HEALTH_POLL_SECONDS:-10}"
 certificate_timeout_seconds="${CERTIFICATE_TIMEOUT_SECONDS:-3600}"
 certificate_poll_seconds="${CERTIFICATE_POLL_SECONDS:-15}"
 endpoint_timeout_seconds="${PUBLIC_ENDPOINT_TIMEOUT_SECONDS:-120}"
-security_csp="default-src 'none'; script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+security_csp="default-src 'none'; script-src 'sha256-9cpFYLGEb43nFRxcezVuHD2huh05Y6/t011BpLqwRvE='; style-src 'sha256-B3k4aPo0RwYE847u9eMw0awwLce/65GM8iBUMLVg54Q='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 fail() {
   printf 'verify-lb: %s\n' "$*" >&2
   exit 1
 }
+
+case "$kubeconfig" in
+  "$runtime_dir"/kubeconfig-verifier | "$runtime_dir"/kubeconfig-verifier-gate-*) ;;
+  *) fail "VERIFIER_KUBECONFIG must stay under the ignored runtime directory" ;;
+esac
 
 cleanup() {
   local exit_code=$?
@@ -44,6 +49,20 @@ trap cleanup EXIT INT TERM
 
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
+
+if [[ $# -ne 2 ]]; then
+  printf 'Usage: %s FULL_APP_A_GIT_SHA FULL_APP_B_GIT_SHA\n' "$0" >&2
+  exit 2
+fi
+app_a_sha="$1"
+app_b_sha="$2"
+[[ "$app_a_sha" =~ ^[0-9a-f]{40}$ ]] \
+  && [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "both image versions must be full lowercase 40-character Git SHAs"
+for sha in "$app_a_sha" "$app_b_sha"; do
+  git cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "Git SHA $sha is not a commit in this repository"
+done
 
 enable_cloud_armor="${ENABLE_CLOUD_ARMOR:-0}"
 [[ "$enable_cloud_armor" == "0" || "$enable_cloud_armor" == "1" ]] \
@@ -613,8 +632,15 @@ grep -Eiq '^x-correlation-id:[[:space:]]*[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{1
   || fail "App A did not generate a valid public response correlation ID"
 grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f][[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate valid public response trace context"
+grep -Eiq '^x-trace-id:[[:space:]]*[0-9a-f]{32}[[:space:]]*$' <<<"$normalized_headers" \
+  || fail "App A did not expose a valid structured-log trace ID"
+public_trace_id="$(awk 'tolower($0) ~ /^x-trace-id:/ {sub(/^[^:]*:[[:space:]]*/, ""); print}' <<<"$normalized_headers" | tail -n 1)"
+public_traceparent="$(awk 'tolower($0) ~ /^traceparent:/ {sub(/^[^:]*:[[:space:]]*/, ""); print}' <<<"$normalized_headers" | tail -n 1)"
+[[ "$public_trace_id" == "${public_traceparent:3:32}" ]] \
+  || fail "the public trace ID does not match the W3C trace context"
 
-jq -e --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" '
+jq -e --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
+  --arg version "$app_b_sha" '
   (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
   (.rateSnapshots | length == 10) and
   all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
@@ -629,7 +655,7 @@ jq -e --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" '
     (.providedBy.region == "us-east4" and
       .providedBy.cluster == "gke-risk-use4")
   ) and
-  (.providedBy.version | test("^[0-9a-f]{40}$"))
+  (.providedBy.version == $version)
 ' "$response_file" >/dev/null \
   || fail "the public response is not the deterministic frozen schema from a real cell"
 
@@ -638,6 +664,8 @@ serving_cluster="$(jq -r '.providedBy.cluster' "$response_file")"
 serving_version="$(jq -r '.providedBy.version' "$response_file")"
 git cat-file -e "$serving_version^{commit}" 2>/dev/null \
   || fail "the serving version is not a real commit in this repository"
+[[ "$serving_version" == "$app_b_sha" ]] \
+  || fail "the public response served App B $serving_version instead of $app_b_sha"
 
 ui_file="$work_dir/public-index.html"
 ui_headers="$work_dir/public-index.headers"
@@ -671,11 +699,16 @@ for marker in \
   'data-api-endpoint="/api/exchange-rates"' \
   'data-snapshot-count="10"' \
   'id="sample-position"' \
+  'id="serving-region"' \
+  'id="trace-id"' \
   'payload.rateSnapshots.length !== 10' \
   'let sampleIndex = -1' \
   'if (advanceSample || sampleIndex < 0)' \
   'sampleIndex = (sampleIndex + 1) % payload.rateSnapshots.length' \
   'cache: "no-store"' \
+  'response.headers.get("x-trace-id")' \
+  'Region: ${source.region}' \
+  'Trace ID: ${traceId}' \
   'loadRates(true)' \
   'loadRates(false)' \
   'Synthetic demonstration rates - not for financial use.' \
@@ -683,6 +716,10 @@ for marker in \
   'data-currency="GBP"' \
   'data-currency="JPY"'; do
   grep -Fq -- "$marker" "$ui_file" || fail "the public UI is missing marker: $marker"
+done
+for hidden_marker in '${source.service}' '${source.cluster}' '${source.version}'; do
+  ! grep -Fq -- "$hidden_marker" "$ui_file" \
+    || fail "the public UI exposes internal metadata: $hidden_marker"
 done
 
 [[ -f "$kubeconfig" ]] \
@@ -694,29 +731,48 @@ esac
 export KUBECONFIG
 
 serving_deployment_json="$(
-  kubectl --context="$serving_cluster" --namespace=risk-system \
+  kubectl --context="$serving_cluster" --namespace=currency-app-b \
     --request-timeout=20s get deployment app-b-engine -o json
 )"
 serving_config_json="$(
-  kubectl --context="$serving_cluster" --namespace=risk-system \
+  kubectl --context="$serving_cluster" --namespace=currency-app-b \
     --request-timeout=20s get configmap runtime-config -o json
 )"
+serving_app_a_json="$(
+  kubectl --context="$serving_cluster" --namespace=currency-app-a \
+    --request-timeout=20s get deployments --selector='app=app-a-gateway' -o json
+)"
 expected_app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$serving_version"
-jq -e --arg image "$expected_app_b_image" '
+jq -e --arg image "$expected_app_b_image" --arg version "$serving_version" '
+  def literal_env($name; $value):
+    [.spec.template.spec.containers[0].env[]?
+      | select(.name == $name and .value == $value)] | length == 1;
   (.metadata.name == "app-b-engine") and
   (.status.readyReplicas >= 2) and
-  ([.spec.template.spec.containers[].image] == [$image])
+  ([.spec.template.spec.containers[].image] == [$image]) and
+  literal_env("SERVICE_VERSION"; $version)
 ' <<<"$serving_deployment_json" >/dev/null \
-  || fail "the response version does not match the serving cluster App B image"
+  || fail "the response version does not match the serving App B image and runtime version"
+expected_app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$app_a_sha"
+jq -e --arg image "$expected_app_a_image" --arg version "$app_a_sha" '
+  def literal_env($item; $name; $value):
+    [$item.spec.template.spec.containers[0].env[]?
+      | select(.name == $name and .value == $value)] | length == 1;
+  ([.items[].metadata.name] | sort) == [
+    "app-a-gateway-a", "app-a-gateway-b", "app-a-gateway-c"] and
+  all(.items[];
+    (.status.readyReplicas == .spec.replicas) and
+    ([.spec.template.spec.containers[].image] == [$image]) and
+    literal_env(.; "SERVICE_VERSION"; $version))
+' <<<"$serving_app_a_json" >/dev/null \
+  || fail "the serving cell does not run the requested App A version"
 jq -e \
   --arg region "$serving_region" \
-  --arg cluster "$serving_cluster" \
-  --arg version "$serving_version" '
+  --arg cluster "$serving_cluster" '
     (.data.SERVICE_REGION == $region) and
-    (.data.SERVICE_CLUSTER == $cluster) and
-    (.data.SERVICE_VERSION == $version)
+    (.data.SERVICE_CLUSTER == $cluster)
   ' <<<"$serving_config_json" >/dev/null \
   || fail "the response cell identity does not match the serving cluster runtime configuration"
 
-printf 'Verified the complete global edge: six exact NEGs, %s/%s healthy endpoints, and status 200 from %s at %s.\n' \
-  "$usc1_healthy" "$use4_healthy" "$serving_cluster" "$serving_version"
+printf 'Verified the complete global edge: six exact NEGs, %s/%s healthy endpoints, and App A %s / App B %s from %s.\n' \
+  "$usc1_healthy" "$use4_healthy" "$app_a_sha" "$app_b_sha" "$serving_cluster"

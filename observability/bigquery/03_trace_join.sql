@@ -9,6 +9,7 @@ WITH app_a AS (
     jsonPayload.cluster AS cluster
   FROM `PROJECT_ID.risk_logs.stdout`
   WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
+    AND resource.labels.namespace_name = 'currency-app-a'
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
     AND jsonPayload.route = '/api/exchange-rates'
@@ -25,6 +26,7 @@ app_b AS (
     jsonPayload.cluster AS cluster
   FROM `PROJECT_ID.risk_logs.stdout`
   WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
+    AND resource.labels.namespace_name = 'currency-app-b'
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-b-engine'
     AND jsonPayload.route = '/internal/exchange-rates'

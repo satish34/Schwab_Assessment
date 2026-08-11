@@ -1,23 +1,8 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: app-a-gateway
-  namespace: risk-system
-spec:
-  type: ClusterIP
-  selector:
-    app: app-a-gateway
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
-      protocol: TCP
----
-apiVersion: v1
-kind: Service
-metadata:
   name: app-b-engine
-  namespace: risk-system
+  namespace: currency-app-b
   annotations:
     cloud.google.com/neg: '{"ingress": false}'
 spec:

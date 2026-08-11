@@ -74,7 +74,7 @@ jq -e '
         "resource.label.cluster_name",
         "resource.label.container_name"
       ])
-      and (.timeSeriesList.filters | index("risk-system") != null)
+      and (.timeSeriesList.filters | index("currency-app-(a|b)") != null)
     )
   )
   and (
@@ -217,7 +217,7 @@ verify_monitoring_metric() {
   local coverage="${4:-all}"
   local filter
   local response
-  filter="metric.type=\"$metric\" AND resource.type=\"k8s_container\" AND resource.label.\"namespace_name\"=\"risk-system\"$extra_filter"
+  filter="metric.type=\"$metric\" AND resource.type=\"k8s_container\" AND resource.label.\"namespace_name\"=monitoring.regex.full_match(\"currency-app-(a|b)\")$extra_filter"
   response="$(
     gcp_get \
       --get \

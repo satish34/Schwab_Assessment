@@ -5,7 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
 expected_account="satish.cse7@gmail.com"
-namespace="risk-system"
+app_a_namespace="currency-app-a"
+app_b_namespace="currency-app-b"
 backend_name="risk-app-a-gateway-backend"
 runtime_dir="$repo_root/.tmp"
 evidence_dir="$repo_root/evidence"
@@ -78,7 +79,7 @@ validate_fault_config() {
   local config
 
   config="$(
-    kubectl --context="$context" --namespace="$namespace" \
+    kubectl --context="$context" --namespace="$app_b_namespace" \
       --request-timeout=30s get configmap risk-faults -o json
   )" || return 1
   jq -e --argjson rate "$expected_rate" '
@@ -106,7 +107,7 @@ restore_fault_best_effort() {
 
   for attempt in 1 2 3; do
     if timeout --foreground --signal=INT --kill-after=10s 1m \
-      kubectl --context="$fault_target_context" --namespace="$namespace" \
+      kubectl --context="$fault_target_context" --namespace="$app_b_namespace" \
         --request-timeout=30s apply \
         -f "$repo_root/k8s/faults/healthy.yaml" >/dev/null 2>&1 \
       && validate_fault_config "$fault_target_context" 0.0; then
@@ -143,7 +144,7 @@ cleanup() {
         "${fault_target_context:-<not-selected>}" >&2
       printf 'Recovery context preserved at %s; run: KUBECONFIG=%q kubectl --context=%q --namespace=%q apply -f %q\n' \
         "${kubeconfig:-<unknown>}" "$kubeconfig" "$fault_target_context" \
-        "$namespace" "$repo_root/k8s/faults/healthy.yaml" >&2
+        "$app_b_namespace" "$repo_root/k8s/faults/healthy.yaml" >&2
       exit_code=1
     fi
   fi
@@ -248,9 +249,9 @@ cell_identity() {
 validate_cell_resources() {
   local context="$1"
   local region cluster zone_a zone_b zone_c
-  local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$git_sha"
-  local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
-  local deployments runtime_config
+  local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$app_a_sha"
+  local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$app_b_sha"
+  local app_a_deployments app_b_deployment app_a_runtime_config app_b_runtime_config
 
   IFS=$'\t' read -r region cluster < <(cell_identity "$context")
   case "$region" in
@@ -267,18 +268,26 @@ validate_cell_resources() {
     *) return 1 ;;
   esac
 
-  deployments="$(
-    kubectl --context="$context" --namespace="$namespace" \
-      --request-timeout=30s get deployments -o json
+  app_a_deployments="$(
+    kubectl --context="$context" --namespace="$app_a_namespace" \
+      --request-timeout=30s get deployments --selector='app=app-a-gateway' -o json
   )" || return 1
-  runtime_config="$(
-    kubectl --context="$context" --namespace="$namespace" \
+  app_b_deployment="$(
+    kubectl --context="$context" --namespace="$app_b_namespace" \
+      --request-timeout=30s get deployment app-b-engine -o json
+  )" || return 1
+  app_a_runtime_config="$(
+    kubectl --context="$context" --namespace="$app_a_namespace" \
+      --request-timeout=30s get configmap runtime-config -o json
+  )" || return 1
+  app_b_runtime_config="$(
+    kubectl --context="$context" --namespace="$app_b_namespace" \
       --request-timeout=30s get configmap runtime-config -o json
   )" || return 1
 
   jq -e \
     --arg app_a "$app_a_image" \
-    --arg app_b "$app_b_image" \
+    --arg app_a_version "$app_a_sha" \
     --arg zone_a "$zone_a" \
     --arg zone_b "$zone_b" \
     --arg zone_c "$zone_c" '
@@ -288,11 +297,13 @@ validate_cell_resources() {
         elif $name == "app-a-gateway-c" then $zone_c
         else ""
         end;
-      ([.items[] | select(.metadata.labels.app == "app-a-gateway")
-        | .metadata.name] | sort) == [
+      def literal_env($item; $name; $value):
+        [$item.spec.template.spec.containers[0].env[]?
+          | select(.name == $name and .value == $value)] | length == 1;
+      ([.items[].metadata.name] | sort) == [
           "app-a-gateway-a", "app-a-gateway-b", "app-a-gateway-c"
         ] and
-      all(.items[] | select(.metadata.labels.app == "app-a-gateway");
+      all(.items[];
         (.metadata.generation <= (.status.observedGeneration // 0)) and
         (.spec.replicas >= 1 and .spec.replicas <= 2) and
         (.status.updatedReplicas == .spec.replicas) and
@@ -301,40 +312,52 @@ validate_cell_resources() {
         ((.status.unavailableReplicas // 0) == 0) and
         (.spec.template.spec.nodeSelector["topology.kubernetes.io/zone"]
           == expected_zone(.metadata.name)) and
-        ([.spec.template.spec.containers[].image] == [$app_a])) and
-      ([.items[] | select(.metadata.name == "app-b-engine")] | length) == 1 and
-      all(.items[] | select(.metadata.name == "app-b-engine");
-        (.metadata.generation <= (.status.observedGeneration // 0)) and
-        (.spec.replicas >= 2 and .spec.replicas <= 6) and
-        (.status.updatedReplicas == .spec.replicas) and
-        (.status.readyReplicas == .spec.replicas) and
-        (.status.availableReplicas == .spec.replicas) and
-        ((.status.unavailableReplicas // 0) == 0) and
-        ([.spec.template.spec.containers[].image] == [$app_b])) and
+        ([.spec.template.spec.containers[].image] == [$app_a]) and
+        literal_env(.; "SERVICE_VERSION"; $app_a_version) and
+        literal_env(.; "APP_B_BASE_URL"; "http://app-b-engine.currency-app-b.svc.cluster.local:8080")) and
       all(.items[].spec.template.spec.containers[].image;
         (contains(":latest") | not))
-    ' <<<"$deployments" >/dev/null || return 1
+    ' <<<"$app_a_deployments" >/dev/null || return 1
 
   jq -e \
-    --arg region "$region" --arg cluster "$cluster" --arg version "$git_sha" '
+    --arg app_b "$app_b_image" \
+    --arg app_b_version "$app_b_sha" '
+      def literal_env($name; $value):
+        [.spec.template.spec.containers[0].env[]?
+          | select(.name == $name and .value == $value)] | length == 1;
+      (.metadata.name == "app-b-engine") and
+      (.metadata.generation <= (.status.observedGeneration // 0)) and
+      (.spec.replicas >= 2 and .spec.replicas <= 6) and
+      (.status.updatedReplicas == .spec.replicas) and
+      (.status.readyReplicas == .spec.replicas) and
+      (.status.availableReplicas == .spec.replicas) and
+      ((.status.unavailableReplicas // 0) == 0) and
+      ([.spec.template.spec.containers[].image] == [$app_b]) and
+      literal_env("SERVICE_VERSION"; $app_b_version) and
+      all(.spec.template.spec.containers[].image; (contains(":latest") | not))
+    ' <<<"$app_b_deployment" >/dev/null || return 1
+
+  for runtime_config in "$app_a_runtime_config" "$app_b_runtime_config"; do
+    jq -e --arg region "$region" --arg cluster "$cluster" '
       (.data.SERVICE_REGION == $region) and
-      (.data.SERVICE_CLUSTER == $cluster) and
-      (.data.SERVICE_VERSION == $version)
+      (.data.SERVICE_CLUSTER == $cluster)
     ' <<<"$runtime_config" >/dev/null || return 1
+  done
 
   validate_fault_config "$context" 0.0
 }
 
 start_port_forward() {
   local context="$1"
-  local resource="$2"
+  local target_namespace="$2"
+  local resource="$3"
   local safe_resource="${resource//\//-}"
   local deadline
 
   stop_port_forward
   active_port_forward_log="$work_dir/port-forward-$context-$safe_resource.log"
   : >"$active_port_forward_log"
-  kubectl --context="$context" --namespace="$namespace" \
+  kubectl --context="$context" --namespace="$target_namespace" \
     port-forward --address=127.0.0.1 "$resource" :8080 \
     >"$active_port_forward_log" 2>&1 &
   active_port_forward_pid=$!
@@ -379,8 +402,15 @@ curl_local_status() {
 ready_pods_json() {
   local context="$1"
   local app_label="$2"
+  local target_namespace
 
-  kubectl --context="$context" --namespace="$namespace" \
+  case "$app_label" in
+    app-a-gateway) target_namespace="$app_a_namespace" ;;
+    app-b-engine) target_namespace="$app_b_namespace" ;;
+    *) return 1 ;;
+  esac
+
+  kubectl --context="$context" --namespace="$target_namespace" \
     --request-timeout=30s get pods --selector="app=$app_label" -o json
 }
 
@@ -388,7 +418,7 @@ all_app_a_pods_in_state() {
   local context="$1"
   local expected_status="$2"
   local expected_body="$3"
-  local image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$git_sha"
+  local image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$app_a_sha"
   local pods pod ready_status cell_status
   local response_file="$work_dir/direct-response.json"
   local pod_names=()
@@ -407,7 +437,7 @@ all_app_a_pods_in_state() {
   mapfile -t pod_names < <(jq -r '.items[].metadata.name' <<<"$pods" | tr -d '\r' | sort)
 
   for pod in "${pod_names[@]}"; do
-    start_port_forward "$context" "pod/$pod" || return 1
+    start_port_forward "$context" "$app_a_namespace" "pod/$pod" || return 1
     ready_status="$(curl_local_status GET /health/ready "$response_file")"
     [[ "$ready_status" == "200" ]] || {
       stop_port_forward
@@ -442,7 +472,7 @@ wait_for_all_app_a_pods_state() {
 
 all_app_b_pods_ready() {
   local context="$1"
-  local image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
+  local image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$app_b_sha"
   local pods
 
   pods="$(ready_pods_json "$context" app-b-engine)" || return 1
@@ -547,7 +577,7 @@ apply_fault_profile() {
   local expected_rate="$3"
 
   timeout --foreground --signal=INT --kill-after=10s 1m \
-    kubectl --context="$context" --namespace="$namespace" \
+    kubectl --context="$context" --namespace="$app_b_namespace" \
       --request-timeout=30s apply \
       -f "$repo_root/k8s/faults/$profile.yaml" >/dev/null
   validate_fault_config "$context" "$expected_rate"
@@ -586,7 +616,7 @@ sample_public_request() {
   if [[ "$http_status" == "200" ]] \
     && jq -e \
       --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
-      --arg version "$git_sha" '
+      --arg version "$app_b_sha" '
       (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
       (.rateSnapshots | length == 10) and
       all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
@@ -974,7 +1004,13 @@ write_evidence() {
 
   {
     printf 'Failover gate: PASS\n'
-    printf 'image_sha=%s\n' "$git_sha"
+    if [[ "$app_a_sha" == "$app_b_sha" ]]; then
+      printf 'image_sha=%s\n' "$app_a_sha"
+    else
+      printf 'image_sha=mixed\n'
+    fi
+    printf 'app_a_image_sha=%s\n' "$app_a_sha"
+    printf 'app_b_image_sha=%s\n' "$app_b_sha"
     printf 'fault_target=%s (%s)\n' "$fault_target_region" "$fault_target_context"
     printf 'surviving_cell=%s (%s)\n' "$surviving_region" "$surviving_context"
     printf 'configured_traffic_rate=1 request/second\n'
@@ -1027,15 +1063,16 @@ main() {
     printf 'Failover failure-window fixtures: PASS\n'
     return 0
   fi
-  if [[ $# -ne 1 ]]; then
-    printf 'Usage: %s FULL_GIT_SHA | --test-failure-window\n' "$0" >&2
+  if [[ $# -ne 2 ]]; then
+    printf 'Usage: %s FULL_APP_A_GIT_SHA FULL_APP_B_GIT_SHA | --test-failure-window\n' "$0" >&2
     exit 2
   fi
 
   : "${PROJECT_ID:?PROJECT_ID is required}"
   : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
-  git_sha="$1"
+  app_a_sha="$1"
+  app_b_sha="$2"
   test_timeout_seconds="${FAILOVER_TEST_TIMEOUT_SECONDS:-900}"
   baseline_sample_count="${FAILOVER_BASELINE_SAMPLES:-5}"
   survivor_sample_count="${FAILOVER_SURVIVOR_SAMPLES:-5}"
@@ -1053,8 +1090,10 @@ main() {
     || fail "expected project $expected_project, received $PROJECT_ID"
   [[ "$GCLOUD_CONFIGURATION" == "$expected_configuration" ]] \
     || fail "expected gcloud configuration $expected_configuration, received $GCLOUD_CONFIGURATION"
-  [[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] \
-    || fail "the image version must be one full lowercase 40-character Git SHA"
+  [[ "$app_a_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "the App A image version must be one full lowercase 40-character Git SHA"
+  [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "the App B image version must be one full lowercase 40-character Git SHA"
 
   [[ "$test_timeout_seconds" =~ ^[0-9]+$ ]] \
     && ((test_timeout_seconds >= 300 && test_timeout_seconds <= 1800)) \
@@ -1097,8 +1136,10 @@ main() {
     "$repo_root/k8s/faults/unavailable.yaml"; do
     [[ -f "$required_file" ]] || fail "required file is missing: $required_file"
   done
-  git cat-file -e "$git_sha^{commit}" 2>/dev/null \
-    || fail "Git SHA $git_sha is not a commit in this repository"
+  git cat-file -e "$app_a_sha^{commit}" 2>/dev/null \
+    || fail "App A Git SHA $app_a_sha is not a commit in this repository"
+  git cat-file -e "$app_b_sha^{commit}" 2>/dev/null \
+    || fail "App B Git SHA $app_b_sha is not a commit in this repository"
   test_failure_window_fixtures
 
   active_account="$(

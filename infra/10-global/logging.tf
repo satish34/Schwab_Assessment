@@ -20,7 +20,7 @@ resource "google_logging_project_sink" "application_stdout" {
   unique_writer_identity = true
   filter                 = <<-EOT
     resource.type="k8s_container"
-    resource.labels.namespace_name="risk-system"
+    (resource.labels.namespace_name="currency-app-a" OR resource.labels.namespace_name="currency-app-b")
     log_id("stdout")
     (jsonPayload.service="app-a-gateway" OR jsonPayload.service="app-b-engine")
   EOT

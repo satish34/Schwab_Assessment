@@ -11,7 +11,7 @@ same change.
 - Regional model: `us-central1` and `us-east4` are independent, active-active
   cells. Neither is a strict traffic primary.
 - Internal call: App A calls only the local
-  `app-b-engine.risk-system.svc.cluster.local` ClusterIP.
+  `app-b-engine.currency-app-b.svc.cluster.local` ClusterIP.
 - Cell failover: App A's background exchange-rate probe controls cached
   `/health/cell` state. Kubernetes readiness never depends on App B.
 - Observability: Cloud Logging to partitioned BigQuery for application panels;
@@ -24,14 +24,15 @@ same change.
 ## Resource names
 
 The live foundation was created before the application changed from a risk
-example to a currency-rate demo. Existing `risk-*` cloud, network, namespace,
-dataset, and registry identifiers remain stable technical names; renaming them
-would replace or migrate healthy infrastructure and is outside this application
-release.
+example to a currency-rate demo. Existing `risk-*` cloud, network, dataset, and
+registry identifiers remain stable technical names. The application namespaces
+use current currency names because they can move without replacing the shared
+GCP foundation.
 
 | Contract | Value |
 |---|---|
-| Namespace | `risk-system` |
+| App A namespace | `currency-app-a` |
+| App B namespace | `currency-app-b` |
 | Regions | `us-central1`, `us-east4` |
 | Cluster names | `gke-risk-usc1`, `gke-risk-use4` |
 | Kubernetes Services | `app-a-gateway`, `app-b-engine` |
@@ -44,6 +45,9 @@ release.
 | Global address | `risk-global-ip` |
 | Cluster node service accounts | `risk-gke-usc1-nodes`, `risk-gke-use4-nodes` |
 | App A caller service account | `currency-app-a-caller` |
+| App A deployer identity | `currency-app-a-deployer` |
+| App B deployer identity | `currency-app-b-deployer` |
+| Developer production identity | none; Dev access stops at repository review and lower environments |
 | Optional TLS objects | `risk-dns-auth`, `risk-cert`, `risk-cert-map` |
 | Health firewall | `risk-allow-gfe-to-app-a` |
 | Cloud Armor policy | `currency-edge-waf` |
@@ -88,7 +92,7 @@ them. App B remains one Deployment with an HPA range of 2-6.
 SERVICE_REGION
 SERVICE_CLUSTER
 SERVICE_VERSION
-APP_B_BASE_URL=http://app-b-engine.risk-system.svc.cluster.local:8080
+APP_B_BASE_URL=http://app-b-engine.currency-app-b.svc.cluster.local:8080
 APP_B_AUTH_MODE=google-id-token
 APP_B_TOKEN_AUDIENCE=https://app-b-engine.schwab-assessment.internal
 APP_A_IDENTITY_EMAIL=currency-app-a-caller@PROJECT_ID.iam.gserviceaccount.com  # App B only
@@ -114,7 +118,9 @@ Cache-Control: no-store
 
 There is no request body or query input. App A generates missing correlation
 and trace identifiers, calls its local App B, and returns App B's response
-unchanged.
+unchanged. The response repeats `x-correlation-id` and `traceparent` and also
+returns `x-trace-id`, the exact 32-character trace identifier written to both
+services' structured request logs.
 
 Response:
 
@@ -155,7 +161,7 @@ App A must not leak App B exception text to callers.
 ## Internal App B API
 
 ```http
-GET http://app-b-engine.risk-system.svc.cluster.local:8080/internal/exchange-rates
+GET http://app-b-engine.currency-app-b.svc.cluster.local:8080/internal/exchange-rates
 ```
 
 The internal endpoint takes no body or query input and returns the same response
@@ -170,8 +176,9 @@ The deployed internal request also requires:
 Authorization: Bearer GOOGLE_SIGNED_ID_TOKEN
 ```
 
-The `app-a-gateway` Kubernetes service account is linked through Workload
-Identity Federation to the dedicated `currency-app-a-caller` IAM service account.
+The `currency-app-a/app-a-gateway` Kubernetes service account is linked through
+Workload Identity Federation to the dedicated `currency-app-a-caller` IAM
+service account.
 App A requests a one-hour Google-signed ID token from the GKE metadata server
 for the exact audience `https://app-b-engine.schwab-assessment.internal`,
 caches it, and refreshes it before expiry. App B verifies Google's signature,
@@ -183,8 +190,11 @@ App B and preserves the public `503` contract.
 
 Tokens and authorization headers are never logged. Health endpoints remain
 unauthenticated. Docker Compose must set `APP_B_AUTH_MODE=disabled` explicitly
-because the local machine has no GKE metadata identity; deployed manifests and
-verification require `google-id-token` and fail closed.
+because the local machine has no GKE metadata identity. It must also use the
+dedicated `.NET` `LocalCompose` environment and Spring `local-compose` profile;
+the standard `.NET` environments and normal Spring runtime profiles reject
+disabled authentication. Deployed manifests and verification require
+`google-id-token` and fail closed.
 
 The internal hop remains HTTP. The signed token authenticates App A but does
 not encrypt traffic or prevent replay of a captured token before expiry;
@@ -195,11 +205,12 @@ would add mTLS for confidentiality and stronger replay resistance.
 
 `GET /` serves a small responsive rate board. It automatically fetches
 `GET /api/exchange-rates` with browser caching disabled, shows the first
-snapshot, and identifies the serving region and cluster. Each refresh-button
-click performs another GET and advances the local display through all ten
-snapshots. It sends no selection input; App B remains stateless and every click
-still exercises the full dependency path. The page must display the
-synthetic-data disclaimer.
+snapshot, and shows only the serving GCP region and request trace ID.
+It does not display service, cluster, or image-version metadata. Each
+refresh-button click performs another GET and advances the local display
+through all ten snapshots. It sends no selection input; App B remains stateless
+and every click still exercises the full dependency path. The page must display
+the synthetic-data disclaimer.
 
 App A sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and a
 hash-based Content Security Policy without `unsafe-inline` on every response.
@@ -259,7 +270,7 @@ Path: `/etc/app-b-faults/faults.json`
 
 Use `injected_error_rate: 1.0` for deterministic unavailability. The file is
 mounted as a projected directory, never with `subPath`. Fault changes are
-cluster-scoped and there is no HTTP fault endpoint.
+scoped to App B in one regional cell and there is no HTTP fault endpoint.
 
 ## Structured log schema
 
@@ -325,6 +336,37 @@ uses one shared PDB with `minAvailable: 2`; App B uses `minAvailable: 1`.
 Every Deployment uses RollingUpdate with `maxUnavailable: 0`, `maxSurge: 1`,
 and a 30-second termination grace period. App A placement is fixed by each
 shard's zonal node selector; App B uses soft zonal topology spreading.
+
+## Team and deployment isolation
+
+App A runs in `currency-app-a`; App B runs in `currency-app-b`. A
+platform-owned Kustomize layer owns both namespaces, restricted Pod Security
+labels, Services and NEG annotations, Kubernetes service accounts, cell
+configuration, the fault ConfigMap, NetworkPolicies, quotas, Roles, and
+RoleBindings. Each app deployment lane owns only its Deployments, HPAs, and
+PDBs.
+
+`currency-app-a-deployer` and `currency-app-b-deployer` have only
+`roles/container.clusterViewer` in Google IAM and write access through a Role
+in their own namespace. They cannot change Services, service accounts,
+NetworkPolicies, quotas, RBAC, Secrets, Pod exec/attach, or the other app.
+Developers have no production-like GCP or Kubernetes identity; changes enter
+through repository review, testing, and lower environments. The two deployers
+use short-lived impersonation; no key is created.
+
+The two app pipelines use separate kubeconfig and work directories and may run
+concurrently for backward-compatible contracts. Breaking API changes require
+an expand-contract release. The clusters, project, VPC, edge, build identity,
+Artifact Registry repository, and observability stack remain shared platform
+boundaries. This is trusted enterprise multi-tenancy, not hostile-tenant
+isolation.
+
+Rollout success does not mean zero-downtime regional failover. The failover
+gate permits failures only inside the measured convergence window and requires
+zero failures after convergence plus complete backend recovery. Capped retries
+for idempotent GETs with exponential backoff and jitter, faster health tuning,
+and pre-provisioned survivor capacity could reduce transition errors; that SLO
+tuning is out of scope.
 
 ## Load-balancer contract
 
@@ -428,4 +470,5 @@ hard-fail guarantee.
 14-service-auth.txt
 15-cloud-armor.txt
 16-binary-authorization.txt
+17-team-isolation.txt
 ```

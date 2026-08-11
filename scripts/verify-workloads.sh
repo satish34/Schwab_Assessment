@@ -10,9 +10,10 @@ expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
 expected_account="satish.cse7@gmail.com"
 auth_audience="https://app-b-engine.schwab-assessment.internal"
-namespace="risk-system"
+app_a_namespace="currency-app-a"
+app_b_namespace="currency-app-b"
 runtime_dir="$repo_root/.tmp"
-kubeconfig="$runtime_dir/kubeconfig-schwab-assessment"
+kubeconfig="${VERIFIER_KUBECONFIG:-$runtime_dir/kubeconfig-verifier}"
 kubeconfig_candidate=""
 work_dir=""
 active_port_forward_pid=""
@@ -23,6 +24,11 @@ fail() {
   printf 'verify-workloads: %s\n' "$*" >&2
   exit 1
 }
+
+case "$kubeconfig" in
+  "$runtime_dir"/kubeconfig-verifier | "$runtime_dir"/kubeconfig-verifier-gate-*) ;;
+  *) fail "VERIFIER_KUBECONFIG must stay under the ignored runtime directory" ;;
+esac
 
 stop_port_forward() {
   if [[ -n "$active_port_forward_pid" ]]; then
@@ -52,21 +58,23 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [[ $# -ne 1 ]]; then
-  printf 'Usage: %s FULL_GIT_SHA\n' "$0" >&2
+if [[ $# -ne 2 ]]; then
+  printf 'Usage: %s FULL_APP_A_GIT_SHA FULL_APP_B_GIT_SHA\n' "$0" >&2
   exit 2
 fi
 
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
-git_sha="$1"
+app_a_sha="$1"
+app_b_sha="$2"
 [[ "$PROJECT_ID" == "$expected_project" ]] \
   || fail "expected project $expected_project, received $PROJECT_ID"
 [[ "$GCLOUD_CONFIGURATION" == "$expected_configuration" ]] \
   || fail "expected gcloud configuration $expected_configuration, received $GCLOUD_CONFIGURATION"
-[[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] \
-  || fail "the image version must be one full lowercase 40-character Git SHA"
+[[ "$app_a_sha" =~ ^[0-9a-f]{40}$ ]] \
+  && [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "both image versions must be full lowercase 40-character Git SHAs"
 [[ "$workload_timeout_seconds" =~ ^[0-9]+$ ]] \
   && ((workload_timeout_seconds >= 30 && workload_timeout_seconds <= 3600)) \
   || fail "WORKLOAD_TIMEOUT_SECONDS must be between 30 and 3600"
@@ -79,8 +87,10 @@ for command_name in curl gcloud git jq kubectl od terraform timeout; do
     || fail "$command_name is required"
 done
 
-git cat-file -e "$git_sha^{commit}" 2>/dev/null \
-  || fail "Git SHA $git_sha is not a commit in this repository"
+for sha in "$app_a_sha" "$app_b_sha"; do
+  git cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "Git SHA $sha is not a commit in this repository"
+done
 [[ -f "$repo_root/testdata/expected-exchange-rates.json" ]] \
   || fail "the expected exchange-rate response fixture is missing"
 
@@ -101,7 +111,8 @@ export CLOUDSDK_CORE_ACCOUNT="$expected_account"
 export CLOUDSDK_CORE_PROJECT="$PROJECT_ID"
 
 # Recheck the immutable registry contract on every standalone verification run.
-timeout --foreground --signal=INT 5m bash scripts/verify-images.sh "$git_sha"
+timeout --foreground --signal=INT 10m \
+  bash scripts/verify-images.sh "$app_a_sha" "$app_b_sha"
 
 mkdir -p "$runtime_dir"
 git check-ignore --quiet -- "$kubeconfig" \
@@ -141,7 +152,7 @@ prepare_context() {
 prepare_kubeconfig() {
   local contexts
 
-  kubeconfig_candidate="$(mktemp "$runtime_dir/kubeconfig.new.XXXXXX")"
+  kubeconfig_candidate="$(mktemp "$runtime_dir/kubeconfig-verifier.new.XXXXXX")"
   chmod 600 "$kubeconfig_candidate" 2>/dev/null || true
   printf '%s\n' \
     'apiVersion: v1' \
@@ -173,12 +184,15 @@ prepare_kubeconfig() {
 print_diagnostics() {
   local context="$1"
 
-  printf '\nWorkload diagnostics for %s:\n' "$context" >&2
-  kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
-    get deployments,replicasets,pods,services,hpa,pdb -o wide >&2 || true
-  printf '\nRecent namespace events for %s:\n' "$context" >&2
-  kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
-    get events --sort-by=.lastTimestamp 2>&1 | tail -n 40 >&2 || true
+  local target_namespace
+  for target_namespace in "$app_a_namespace" "$app_b_namespace"; do
+    printf '\nWorkload diagnostics for %s/%s:\n' "$context" "$target_namespace" >&2
+    kubectl --context="$context" --namespace="$target_namespace" --request-timeout=20s \
+      get deployments,replicasets,pods,services,hpa,pdb,configmaps -o wide >&2 || true
+    printf '\nRecent namespace events for %s/%s:\n' "$context" "$target_namespace" >&2
+    kubectl --context="$context" --namespace="$target_namespace" --request-timeout=20s \
+      get events --sort-by=.lastTimestamp 2>&1 | tail -n 40 >&2 || true
+  done
 }
 
 workload_ready() {
@@ -193,15 +207,15 @@ workload_ready() {
   local replicas
 
   deployment_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=20s \
       get deployment "$deployment" -o json 2>/dev/null
   )" || return 1
   pods_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=20s \
       get pods --selector="app=$deployment" -o json 2>/dev/null
   )" || return 1
   hpa_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=20s \
       get horizontalpodautoscaler "$deployment" -o json 2>/dev/null
   )" || return 1
 
@@ -210,6 +224,7 @@ workload_ready() {
     --arg auth_audience "$auth_audience" \
     --arg caller_email "currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com" \
     --arg project_id "$PROJECT_ID" \
+    --arg version "$app_b_sha" \
     --argjson min "$min_replicas" \
     --argjson max "$max_replicas" '
     def literal_env($name; $value):
@@ -226,6 +241,7 @@ workload_ready() {
     ([.spec.template.spec.containers[].image] == [$image]) and
     (.spec.template.spec.serviceAccountName == "app-b-engine") and
     (.spec.template.spec.automountServiceAccountToken == false) and
+    literal_env("SERVICE_VERSION"; $version) and
     literal_env("APP_B_AUTH_MODE"; "google-id-token") and
     literal_env("APP_B_TOKEN_AUDIENCE"; $auth_audience) and
     literal_env("APP_A_IDENTITY_EMAIL"; $caller_email) and
@@ -285,15 +301,15 @@ app_a_shards_ready() {
   local actual_zone
 
   deployments_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=20s \
       get deployments --selector='app=app-a-gateway' -o json 2>/dev/null
   )" || return 1
   pods_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=20s \
       get pods --selector='app=app-a-gateway' -o json 2>/dev/null
   )" || return 1
   hpas_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=20s \
       get horizontalpodautoscalers \
         app-a-gateway-a app-a-gateway-b app-a-gateway-c -o json 2>/dev/null
   )" || return 1
@@ -302,6 +318,7 @@ app_a_shards_ready() {
     --arg image "$image" \
     --arg auth_audience "$auth_audience" \
     --arg project_id "$PROJECT_ID" \
+    --arg version "$app_a_sha" \
     --arg zone_a "$zone_a" \
     --arg zone_b "$zone_b" \
     --arg zone_c "$zone_c" \
@@ -345,6 +362,8 @@ app_a_shards_ready() {
         ((.status.unavailableReplicas // 0) == 0) and
         (.spec.template.spec.serviceAccountName == "app-a-gateway") and
         (.spec.template.spec.automountServiceAccountToken == false) and
+        literal_env("SERVICE_VERSION"; $version) and
+        literal_env("APP_B_BASE_URL"; "http://app-b-engine.currency-app-b.svc.cluster.local:8080") and
         literal_env("APP_B_AUTH_MODE"; "google-id-token") and
         literal_env("APP_B_TOKEN_AUDIENCE"; $auth_audience) and
         literal_env("GOOGLE_CLOUD_PROJECT"; $project_id) and
@@ -466,8 +485,8 @@ app_a_shards_ready() {
 
 wait_for_workloads() {
   local context="$1"
-  local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$git_sha"
-  local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
+  local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$app_a_sha"
+  local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$app_b_sha"
   local zone_a
   local zone_b
   local zone_c
@@ -507,11 +526,11 @@ verify_services() {
   local app_b_json
 
   app_a_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=20s \
       get service app-a-gateway -o json
   )"
   app_b_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=20s \
       get service app-b-engine -o json
   )"
 
@@ -539,11 +558,11 @@ verify_service_accounts() {
   local app_b_json
 
   app_a_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=20s \
       get serviceaccount app-a-gateway -o json
   )"
   app_b_json="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=20s \
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=20s \
       get serviceaccount app-b-engine -o json
   )"
 
@@ -575,7 +594,7 @@ verify_app_b_rejects_unauthenticated_callers() {
   local status
 
   : >"$port_forward_log"
-  kubectl --context="$context" --namespace="$namespace" \
+  kubectl --context="$context" --namespace="$app_b_namespace" \
     port-forward --address=127.0.0.1 service/app-b-engine :8080 \
     >"$port_forward_log" 2>&1 &
   active_port_forward_pid=$!
@@ -638,7 +657,7 @@ verify_local_path() {
   local span_id
 
   : >"$port_forward_log"
-  kubectl --context="$context" --namespace="$namespace" \
+  kubectl --context="$context" --namespace="$app_a_namespace" \
     port-forward --address=127.0.0.1 service/app-a-gateway :8080 \
     >"$port_forward_log" 2>&1 &
   active_port_forward_pid=$!
@@ -699,7 +718,7 @@ verify_local_path() {
     --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
     --arg region "$expected_region" \
     --arg cluster "$expected_cluster" \
-    --arg version "$git_sha" '
+    --arg version "$app_b_sha" '
       (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
       (.rateSnapshots | length == 10) and
       all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
@@ -734,4 +753,5 @@ verify_service_accounts gke-risk-use4
 verify_app_b_rejects_unauthenticated_callers gke-risk-use4
 verify_local_path gke-risk-use4 us-east4 gke-risk-use4
 
-printf 'Verified both regional workload cells at immutable version %s.\n' "$git_sha"
+printf 'Verified both regional workload cells at App A %s / App B %s.\n' \
+  "$app_a_sha" "$app_b_sha"

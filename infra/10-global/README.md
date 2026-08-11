@@ -1,12 +1,30 @@
 # 10-global
 
-This stack creates the shared VPC, regional GKE ranges, Artifact Registry,
-global IP, health-check firewall, BigQuery log sink, and scoped node, build,
-dashboard, and App A caller service accounts. Only the `app-a-gateway`
-Kubernetes service account may impersonate `currency-app-a-caller`, through
-`roles/iam.workloadIdentityUser`; the identity receives no project role. It
-owns the private Cloud Build source bucket, where source archives expire after
-seven days. It also removes the unused default VPC and strips Editor from
+This stack creates the shared network, registry, global IP, log export, and
+service accounts. Its access model is deliberately small:
+
+| Persona | Identity and exact Google IAM | Kubernetes scope |
+|---|---|---|
+| Dev | No production principal; changes flow through repository review and lower environments | No production-like project or cluster access |
+| Ops | `satish.cse7@gmail.com`: existing `roles/owner`, managed outside this stack | Platform administration; this broad single-operator access is an assessment limitation |
+| SRE | `grafana-reader`: dataset `roles/bigquery.dataViewer`; project `roles/bigquery.jobUser`, `roles/monitoring.viewer`, and custom `grafanaProjectReader` | No Kubernetes access; read-only dashboard data |
+| CI/CD | Shared `risk-cloud-build`: `roles/artifactregistry.writer` on the repository, `roles/logging.logWriter` on the project, and `roles/storage.objectViewer` on the source bucket. Per-app deployers: `roles/container.clusterViewer` | Each deployer can change only its own Deployments, HPAs, and PDBs |
+
+`satish.cse7@gmail.com` receives `roles/iam.serviceAccountTokenCreator` on the
+SRE and deployer service accounts, so those identities use short-lived
+impersonation; Terraform creates no keys. `roles/container.clusterViewer` can
+read project-level cluster metadata, while Kubernetes RBAC is the namespace
+authorization boundary.
+
+Only `currency-app-a/app-a-gateway` may impersonate
+`currency-app-a-caller`, through `roles/iam.workloadIdentityUser`; this runtime
+identity has no project role. Both apps still share the build identity and
+Artifact Registry repository, so deployment isolation—not build
+isolation—is claimed. That shared supply-chain boundary is a remaining
+cross-team blast radius; production would split the builders and repositories.
+
+The private Cloud Build source bucket expires source archives after seven
+days. This stack also removes the unused default VPC and strips Editor from
 default service accounts.
 
 When `ENABLE_BINARY_AUTHORIZATION=1`, it owns the project policy:

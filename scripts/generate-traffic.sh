@@ -8,9 +8,10 @@ export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
 expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
 expected_account="satish.cse7@gmail.com"
-namespace="risk-system"
+app_a_namespace="currency-app-a"
+app_b_namespace="currency-app-b"
 runtime_dir="$repo_root/.tmp"
-kubeconfig="$runtime_dir/kubeconfig-schwab-assessment"
+kubeconfig="$runtime_dir/kubeconfig-verifier"
 manifest="$runtime_dir/bigquery-seed.json"
 success_rounds="${TRAFFIC_SUCCESS_ROUNDS:-34}"
 request_interval_seconds="${TRAFFIC_INTERVAL_SECONDS:-1}"
@@ -18,7 +19,7 @@ fault_timeout_seconds="${FAULT_ACTIVATION_TIMEOUT_SECONDS:-180}"
 recovery_timeout_seconds="${FAULT_RECOVERY_TIMEOUT_SECONDS:-240}"
 backend_timeout_seconds="${BACKEND_RECOVERY_TIMEOUT_SECONDS:-180}"
 app_b_token_audience="https://app-b-engine.schwab-assessment.internal"
-app_b_internal_url="http://app-b-engine.risk-system.svc.cluster.local:8080/internal/exchange-rates"
+app_b_internal_url="http://app-b-engine.currency-app-b.svc.cluster.local:8080/internal/exchange-rates"
 metadata_identity_url="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
 work_dir=""
 events_file=""
@@ -55,7 +56,7 @@ restore_fault_best_effort() {
 
   for attempt in 1 2 3; do
     if timeout --foreground --signal=INT --kill-after=10s 1m \
-      kubectl --context="$context" --namespace="$namespace" \
+      kubectl --context="$context" --namespace="$app_b_namespace" \
         --request-timeout=30s apply -f "$repo_root/k8s/faults/healthy.yaml" \
         >/dev/null 2>&1 \
       && validate_fault_config "$context" 0.0; then
@@ -80,7 +81,7 @@ cleanup() {
         printf 'generate-traffic: ERROR: three automatic restore attempts failed for %s.\n' \
           "$context" >&2
         printf 'Run: KUBECONFIG=%q kubectl --context=%q --namespace=%q apply -f %q\n' \
-          "${KUBECONFIG:-$kubeconfig}" "$context" "$namespace" \
+          "${KUBECONFIG:-$kubeconfig}" "$context" "$app_b_namespace" \
           "$repo_root/k8s/faults/healthy.yaml" >&2
       fi
     fi
@@ -98,21 +99,23 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if [[ $# -ne 1 ]]; then
-  printf 'Usage: %s FULL_GIT_SHA\n' "$0" >&2
+if [[ $# -ne 2 ]]; then
+  printf 'Usage: %s FULL_APP_A_GIT_SHA FULL_APP_B_GIT_SHA\n' "$0" >&2
   exit 2
 fi
 
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
-git_sha="$1"
+app_a_sha="$1"
+app_b_sha="$2"
 [[ "$PROJECT_ID" == "$expected_project" ]] \
   || fail "expected project $expected_project, received $PROJECT_ID"
 [[ "$GCLOUD_CONFIGURATION" == "$expected_configuration" ]] \
   || fail "expected gcloud configuration $expected_configuration, received $GCLOUD_CONFIGURATION"
-[[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] \
-  || fail "the image version must be one full lowercase 40-character Git SHA"
+[[ "$app_a_sha" =~ ^[0-9a-f]{40}$ ]] \
+  && [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "both image versions must be full lowercase 40-character Git SHAs"
 [[ "$success_rounds" =~ ^[0-9]+$ ]] \
   && ((success_rounds >= 1 && success_rounds <= 60)) \
   || fail "TRAFFIC_SUCCESS_ROUNDS must be between 1 and 60"
@@ -151,8 +154,10 @@ for required_file in \
   "$repo_root/testdata/expected-exchange-rates.json"; do
   [[ -f "$required_file" ]] || fail "required file is missing: $required_file"
 done
-git cat-file -e "$git_sha^{commit}" 2>/dev/null \
-  || fail "Git SHA $git_sha is not a commit in this repository"
+for sha in "$app_a_sha" "$app_b_sha"; do
+  git cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "Git SHA $sha is not a commit in this repository"
+done
 
 active_account="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null
@@ -191,37 +196,53 @@ contexts="$(kubectl config get-contexts -o name | tr -d '\r' | sort)"
 
 validate_workload_sha() {
   local context="$1"
-  local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$git_sha"
-  local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$git_sha"
-  local deployments
+  local app_a_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-a:$app_a_sha"
+  local app_b_image="us-central1-docker.pkg.dev/$PROJECT_ID/risk/app-b:$app_b_sha"
+  local app_a_deployments
+  local app_b_deployment
 
-  deployments="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=30s \
-      get deployments -o json
+  app_a_deployments="$(
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=30s \
+      get deployments --selector='app=app-a-gateway' -o json
   )"
-  jq -e --arg app_a "$app_a_image" --arg app_b "$app_b_image" '
-    ([.items[] | select(.metadata.labels.app == "app-a-gateway")]
-      | length) == 3 and
-    all(.items[] | select(.metadata.labels.app == "app-a-gateway");
+  app_b_deployment="$(
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=30s \
+      get deployment app-b-engine -o json
+  )"
+  jq -e --arg image "$app_a_image" --arg version "$app_a_sha" '
+    def literal_env($item; $name; $value):
+      [$item.spec.template.spec.containers[0].env[]?
+        | select(.name == $name and .value == $value)] | length == 1;
+    (.items | length) == 3 and
+    all(.items[];
       (.status.observedGeneration == .metadata.generation) and
       (.status.replicas // 0) >= 1 and (.status.replicas // 0) <= 2 and
       (.status.updatedReplicas == .status.replicas) and
       (.status.readyReplicas == .status.replicas) and
       ((.status.unavailableReplicas // 0) == 0) and
-      ([.spec.template.spec.containers[].image] == [$app_a])) and
-    ([.items[] | select(.metadata.name == "app-b-engine")]
-      | length) == 1 and
-    all(.items[] | select(.metadata.name == "app-b-engine");
+      ([.spec.template.spec.containers[].image] == [$image]) and
+      literal_env(.; "SERVICE_VERSION"; $version) and
+      literal_env(.; "APP_B_BASE_URL"; "http://app-b-engine.currency-app-b.svc.cluster.local:8080")) and
+    all(.items[].spec.template.spec.containers[].image;
+      (contains(":latest") | not))
+  ' <<<"$app_a_deployments" >/dev/null \
+    || fail "$context App A is not ready on exact immutable SHA $app_a_sha"
+
+  jq -e --arg image "$app_b_image" --arg version "$app_b_sha" '
+    def literal_env($name; $value):
+      [.spec.template.spec.containers[0].env[]?
+        | select(.name == $name and .value == $value)] | length == 1;
+    (.metadata.name == "app-b-engine") and
       (.status.observedGeneration == .metadata.generation) and
       (.status.replicas // 0) >= 2 and (.status.replicas // 0) <= 6 and
       (.status.updatedReplicas == .status.replicas) and
       (.status.readyReplicas == .status.replicas) and
       ((.status.unavailableReplicas // 0) == 0) and
-      ([.spec.template.spec.containers[].image] == [$app_b])) and
-    all(.items[].spec.template.spec.containers[].image;
-      (contains(":latest") | not))
-  ' <<<"$deployments" >/dev/null \
-    || fail "$context is not ready on the exact immutable SHA $git_sha"
+      ([.spec.template.spec.containers[].image] == [$image]) and
+      literal_env("SERVICE_VERSION"; $version) and
+      all(.spec.template.spec.containers[].image; (contains(":latest") | not))
+  ' <<<"$app_b_deployment" >/dev/null \
+    || fail "$context App B is not ready on exact immutable SHA $app_b_sha"
 }
 
 validate_fault_config() {
@@ -230,7 +251,7 @@ validate_fault_config() {
   local config
 
   config="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=30s \
+    kubectl --context="$context" --namespace="$app_b_namespace" --request-timeout=30s \
       get configmap risk-faults -o json
   )"
   jq -e --argjson rate "$expected_rate" '
@@ -331,7 +352,7 @@ ready_app_a_pod() {
   local pods
 
   pods="$(
-    kubectl --context="$context" --namespace="$namespace" --request-timeout=30s \
+    kubectl --context="$context" --namespace="$app_a_namespace" --request-timeout=30s \
       get pods --selector='app=app-a-gateway' -o json
   )"
   jq -r '
@@ -363,7 +384,7 @@ issue_authenticated_app_b_request() {
   # exec stream returns the App B status and body, never the bearer token.
   if ! exec_output="$(
       timeout --foreground --signal=INT --kill-after=5s 30s \
-        kubectl --context="$context" --namespace="$namespace" \
+        kubectl --context="$context" --namespace="$app_a_namespace" \
           --request-timeout=25s exec "$pod" --container=app-a-gateway -- \
           sh -eu -c '
             audience="$1"
@@ -484,7 +505,7 @@ assert_success_response() {
     || fail "synthetic request returned HTTP ${request_status:-<none>}"
   jq -e \
     --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
-    --arg version "$git_sha" '
+    --arg version "$app_b_sha" '
       (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
       (.rateSnapshots | length == 10) and
       all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
@@ -515,7 +536,7 @@ start_port_forward() {
 
   stop_port_forward
   : >"$log_file"
-  kubectl --context="$context" --namespace="$namespace" \
+  kubectl --context="$context" --namespace="$app_a_namespace" \
     port-forward --address=127.0.0.1 "$resource" :8080 \
     >"$log_file" 2>&1 &
   active_port_forward_pid=$!
@@ -570,7 +591,7 @@ apply_fault_profile() {
   local expected_rate="$3"
 
   timeout --foreground --signal=INT --kill-after=10s 1m \
-    kubectl --context="$context" --namespace="$namespace" \
+    kubectl --context="$context" --namespace="$app_b_namespace" \
       --request-timeout=30s apply -f "$repo_root/k8s/faults/$profile.yaml" \
       >/dev/null
   validate_fault_config "$context" "$expected_rate" \
@@ -777,17 +798,19 @@ jq -s \
   --arg run_id "$run_id" \
   --arg project_id "$PROJECT_ID" \
   --arg configuration "$GCLOUD_CONFIGURATION" \
-  --arg image_sha "$git_sha" \
+  --arg app_a_sha "$app_a_sha" \
+  --arg app_b_sha "$app_b_sha" \
   --arg public_endpoint "$public_endpoint" \
   --arg started_at "$started_at" \
   --arg completed_at "$completed_at" \
   --argjson success_duration "$success_traffic_duration_seconds" '
     {
-      schema_version: 2,
+      schema_version: 3,
       run_id: $run_id,
       project_id: $project_id,
       gcloud_configuration: $configuration,
-      image_sha: $image_sha,
+      app_a_sha: $app_a_sha,
+      app_b_sha: $app_b_sha,
       public_endpoint: $public_endpoint,
       started_at: $started_at,
       completed_at: $completed_at,
@@ -812,5 +835,5 @@ jq -e '
   || fail "the generated traffic manifest is incomplete"
 
 mv -f -- "$manifest_candidate" "$manifest"
-printf 'Generated %s bounded exchange-rate requests for run %s at immutable SHA %s; both cell faults were restored.\n' \
-  "$(jq '.events | length' "$manifest")" "$run_id" "$git_sha"
+printf 'Generated %s bounded exchange-rate requests for run %s at App A %s / App B %s; both cell faults were restored.\n' \
+  "$(jq '.events | length' "$manifest")" "$run_id" "$app_a_sha" "$app_b_sha"

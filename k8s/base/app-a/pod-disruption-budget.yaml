@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-a-gateway
+  namespace: currency-app-a
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: app-a-gateway

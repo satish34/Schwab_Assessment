@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - network-policies.yaml
+  - resource-quotas.yaml
+  - app-a-serviceaccount.yaml
+  - app-a-service.yaml
+  - app-b-serviceaccount.yaml
+  - app-b-service.yaml
+  - fault-config.yaml
+configMapGenerator:
+  - name: runtime-config
+    namespace: currency-app-a
+    literals:
+      - SERVICE_REGION=local
+      - SERVICE_CLUSTER=local
+  - name: runtime-config
+    namespace: currency-app-b
+    literals:
+      - SERVICE_REGION=local
+      - SERVICE_CLUSTER=local
+generatorOptions:
+  disableNameSuffixHash: true

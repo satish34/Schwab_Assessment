@@ -1,23 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - namespace.yaml
-  - serviceaccounts.yaml
-  - fault-config.yaml
-  - app-a-shards/a
-  - app-a-shards/b
-  - app-a-shards/c
-  - app-b-deployment.yaml
-  - services.yaml
-  - autoscaling.yaml
-  - pod-disruption-budgets.yaml
-  - network-policies.yaml
-configMapGenerator:
-  - name: runtime-config
-    namespace: risk-system
-    literals:
-      - SERVICE_REGION=local
-      - SERVICE_CLUSTER=local
-      - SERVICE_VERSION=dev
-generatorOptions:
-  disableNameSuffixHash: true
+  - platform
+  - app-a
+  - app-b

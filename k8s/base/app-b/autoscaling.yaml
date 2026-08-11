@@ -2,7 +2,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: app-b-engine
-  namespace: risk-system
+  namespace: currency-app-b
 spec:
   scaleTargetRef:
     apiVersion: apps/v1

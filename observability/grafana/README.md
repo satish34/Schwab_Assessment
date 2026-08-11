@@ -2,8 +2,9 @@
 
 `currency-dashboard.json` uses BigQuery for App A errors and latency, and Cloud
 Monitoring for restarts and utilization. Every query separates the two cells.
-`risk_logs` and `risk-system` remain in queries only because they are the
-already-deployed BigQuery dataset and Kubernetes namespace identifiers.
+`risk_logs` remains because it is the existing BigQuery dataset identifier.
+Cloud Monitoring queries include both `currency-app-a` and `currency-app-b`
+namespaces.
 
 The provisioning files are for self-hosted Grafana. Install
 `grafana-bigquery-datasource` 3.2.0, mount the dashboard at

@@ -92,7 +92,7 @@
           "format": 0,
           "location": "US",
           "rawQuery": true,
-          "rawSql": "WITH public_requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n),\ninternal_requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code,\n    jsonPayload.decision AS decision\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-b-engine'\n    AND jsonPayload.route = '/internal/exchange-rates'\n    AND jsonPayload.method = 'GET'\n),\nseries AS (\n  SELECT\n    time,\n    CONCAT(region, ' / ', cluster, ' / public 5xx') AS cell,\n    100 * SAFE_DIVIDE(COUNTIF(status_code >= 500), COUNT(*)) AS error_rate_pct\n  FROM public_requests\n  GROUP BY time, region, cluster\n  UNION ALL\n  SELECT\n    time,\n    CONCAT(region, ' / ', cluster, ' / auth rejected') AS cell,\n    100 * SAFE_DIVIDE(\n      COUNTIF(status_code = 401 AND decision = 'AUTH_REJECTED'),\n      COUNT(*)\n    ) AS error_rate_pct\n  FROM internal_requests\n  GROUP BY time, region, cluster\n)\nSELECT time, cell, error_rate_pct\nFROM series\nORDER BY time, cell;",
+          "rawSql": "WITH public_requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND resource.labels.namespace_name = 'currency-app-a'\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n),\ninternal_requests AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code,\n    jsonPayload.decision AS decision\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND resource.labels.namespace_name = 'currency-app-b'\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-b-engine'\n    AND jsonPayload.route = '/internal/exchange-rates'\n    AND jsonPayload.method = 'GET'\n),\nseries AS (\n  SELECT\n    time,\n    CONCAT(region, ' / ', cluster, ' / public 5xx') AS cell,\n    100 * SAFE_DIVIDE(COUNTIF(status_code >= 500), COUNT(*)) AS error_rate_pct\n  FROM public_requests\n  GROUP BY time, region, cluster\n  UNION ALL\n  SELECT\n    time,\n    CONCAT(region, ' / ', cluster, ' / auth rejected') AS cell,\n    100 * SAFE_DIVIDE(\n      COUNTIF(status_code = 401 AND decision = 'AUTH_REJECTED'),\n      COUNT(*)\n    ) AS error_rate_pct\n  FROM internal_requests\n  GROUP BY time, region, cluster\n)\nSELECT time, cell, error_rate_pct\nFROM series\nORDER BY time, cell;",
           "refId": "A"
         }
       ],
@@ -164,7 +164,7 @@
           "format": 0,
           "location": "US",
           "rawQuery": true,
-          "rawSql": "WITH buckets AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    APPROX_QUANTILES(SAFE_CAST(jsonPayload.latency_ms AS INT64), 100) AS quantiles\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n    AND jsonPayload.latency_ms IS NOT NULL\n  GROUP BY time, region, cluster\n)\nSELECT time, CONCAT(region, ' / ', cluster, ' / p50') AS series, quantiles[OFFSET(50)] AS latency_ms\nFROM buckets\nUNION ALL\nSELECT time, CONCAT(region, ' / ', cluster, ' / p95') AS series, quantiles[OFFSET(95)] AS latency_ms\nFROM buckets\nUNION ALL\nSELECT time, CONCAT(region, ' / ', cluster, ' / p99') AS series, quantiles[OFFSET(99)] AS latency_ms\nFROM buckets\nORDER BY time, series;",
+          "rawSql": "WITH buckets AS (\n  SELECT\n    $__timeGroup(timestamp, $__interval) AS time,\n    jsonPayload.region AS region,\n    jsonPayload.cluster AS cluster,\n    APPROX_QUANTILES(SAFE_CAST(jsonPayload.latency_ms AS INT64), 100) AS quantiles\n  FROM `schwab-assessment-gke.risk_logs.stdout`\n  WHERE $__timeFilter(timestamp)\n    AND resource.labels.namespace_name = 'currency-app-a'\n    AND jsonPayload.log_type = 'request'\n    AND jsonPayload.service = 'app-a-gateway'\n    AND jsonPayload.route = '/api/exchange-rates'\n    AND jsonPayload.method = 'GET'\n    AND jsonPayload.latency_ms IS NOT NULL\n  GROUP BY time, region, cluster\n)\nSELECT time, CONCAT(region, ' / ', cluster, ' / p50') AS series, quantiles[OFFSET(50)] AS latency_ms\nFROM buckets\nUNION ALL\nSELECT time, CONCAT(region, ' / ', cluster, ' / p95') AS series, quantiles[OFFSET(95)] AS latency_ms\nFROM buckets\nUNION ALL\nSELECT time, CONCAT(region, ' / ', cluster, ' / p99') AS series, quantiles[OFFSET(99)] AS latency_ms\nFROM buckets\nORDER BY time, series;",
           "refId": "A"
         }
       ],
@@ -253,8 +253,8 @@
               "k8s_container",
               "AND",
               "resource.label.namespace_name",
-              "=",
-              "risk-system"
+              "=~",
+              "currency-app-(a|b)"
             ],
             "groupBys": [
               "resource.label.location",
@@ -373,8 +373,8 @@
               "k8s_container",
               "AND",
               "resource.label.namespace_name",
-              "=",
-              "risk-system"
+              "=~",
+              "currency-app-(a|b)"
             ],
             "groupBys": [
               "resource.label.location",
@@ -409,8 +409,8 @@
               "k8s_container",
               "AND",
               "resource.label.namespace_name",
-              "=",
-              "risk-system",
+              "=~",
+              "currency-app-(a|b)",
               "AND",
               "metric.label.memory_type",
               "=",

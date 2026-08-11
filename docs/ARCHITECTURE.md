@@ -1,153 +1,162 @@
 # Architecture
 
-## Why standalone zonal NEGs
+The system uses two active regional GKE cells behind one global HTTPS endpoint.
+Each cluster is shared by two trusted application teams, but App A and App B
+have separate namespaces, deployment identities, and release paths.
 
-The implementation uses one Terraform-managed global external Application
-Load Balancer and six standalone zonal GKE Pod NEGs instead of Multi Cluster
-Ingress or multi-cluster Gateway. This keeps the complete load-balancer graph
-in Terraform, avoids Fleet/Multi-cluster Services setup, and preserves the
-chosen Kubernetes NetworkPolicy model.
-
-Terraform does not create or populate the NEGs. Kubernetes declares the named
-App A Service exposure, and GKE creates and synchronizes the zonal NEGs.
-Terraform validates and attaches those six existing groups. This is
-infrastructure as code across two control planes, not a claim that Terraform
-owns every object.
-
-There is no Kubernetes Ingress, Gateway, or multi-cluster ingress controller in
-the request path. The Terraform load balancer addresses the GKE-managed Pod
-NEGs directly; that control-plane difference from the assignment example is
-intentional and disclosed in `PLAN_VS_ASSIGNMENT.md`.
-
-The tradeoff is more orchestration and a strict apply order. Regional Autopilot
-placement first left some zones without a real endpoint, so App A now has one
-zonal shard Deployment in each frozen zone. Each shard scales from one to two
-Pods, giving three to six App A Pods per region and one real endpoint in each
-NEG. This is deterministic, but it costs two extra minimum App A Pods and uses
-three small HPAs per region.
-
-## Request and health flow
+## Runtime architecture
 
 ```mermaid
 flowchart TB
-  Client["Browser or API client"] --> ALB["HTTPS satish.store:443<br/>Global external ALB"]
-  Armor["Cloud Armor<br/>optional; disabled live"] -.->|attaches when enabled| ALB
-  Identity["GKE Workload Identity<br/>currency-app-a-caller"]
+  Client["Browser or API client"] --> DNS["Cloud DNS<br/>satish.store"]
+  DNS --> Edge["Global external HTTPS load balancer<br/>managed certificate and static IP"]
 
-  subgraph USC1["us-central1 - gke-risk-usc1"]
-    A1["App A - Java<br/>currency UI and API"] -->|Google-signed ID token| B1["App B - .NET<br/>private rate provider"]
+  subgraph Central["us-central1 GKE cell"]
+    subgraph CentralA["currency-app-a namespace"]
+      CA["Java App A<br/>UI and public API"]
+    end
+    subgraph CentralB["currency-app-b namespace"]
+      CB[".NET App B<br/>private rate provider"]
+    end
+    CA -->|"signed token and local DNS"| CB
   end
 
-  subgraph USE4["us-east4 - gke-risk-use4"]
-    A2["App A - Java<br/>currency UI and API"] -->|Google-signed ID token| B2["App B - .NET<br/>private rate provider"]
+  subgraph East["us-east4 GKE cell"]
+    subgraph EastA["currency-app-a namespace"]
+      EA["Java App A<br/>UI and public API"]
+    end
+    subgraph EastB["currency-app-b namespace"]
+      EB[".NET App B<br/>private rate provider"]
+    end
+    EA -->|"signed token and local DNS"| EB
   end
 
-  ALB --> A1
-  ALB --> A2
-  Identity -.->|mints audience-bound token| A1
-  Identity -.->|mints audience-bound token| A2
-  A1 --> Logs["Cloud Logging"]
-  B1 --> Logs
-  A2 --> Logs
-  B2 --> Logs
-  Logs --> BQ["BigQuery risk_logs"]
-  Logs --> Errors["Error Reporting"]
-  BQ --> Grafana["Grafana application panels"]
-  Monitoring["Cloud Monitoring"] --> Grafana
+  Edge -->|"three zonal Pod NEGs"| CA
+  Edge -->|"three zonal Pod NEGs"| EA
 ```
 
-The remaining `risk-*` names are frozen infrastructure identifiers created
-before the application became a currency demo. The public content and APIs use
-currency language; replacing healthy clusters, registry paths, and data names
-only for cosmetic renaming would add migration risk and cost.
+The load balancer reaches six GKE-managed zonal Pod NEGs directly. Terraform
+owns the edge and attaches those NEGs after Kubernetes creates and populates
+them. This avoids Fleet/MCI/MCS, but requires the Kubernetes/NEG gate before the
+load-balancer stack.
 
-```text
-client
-  -> GET / or GET /api/exchange-rates on https://satish.store:443
-  -> EXTERNAL_MANAGED load balancer
-  -> one of six healthy App A Pod NEG endpoints
-  -> Java App A in that regional cell
-  -> local app-b-engine ClusterIP
-  -> GET /internal/exchange-rates on .NET App B in the same regional cell
+## Request and identity flow
+
+```mermaid
+sequenceDiagram
+  actor User as Client
+  participant Edge as HTTPS load balancer
+  participant AppA as App A in selected region
+  participant Metadata as GKE metadata server
+  participant AppB as App B in same region
+
+  User->>Edge: GET / or /api/exchange-rates
+  Edge->>AppA: Forward to healthy Pod endpoint
+  AppA->>Metadata: Request audience-bound ID token
+  Metadata-->>AppA: Google-signed token
+  AppA->>AppB: GET /internal/exchange-rates + Bearer token
+  AppB-->>AppA: Synthetic rate catalog
+  AppA-->>User: HTTPS 200 + correlation and trace IDs
 ```
 
-App B has no public endpoint, Ingress, load-balancer NEG, or cross-cluster
-route. The two cells share the global frontend and versioned desired state, but
-not an application dependency path or datastore.
+App B has no public endpoint. Its NetworkPolicy accepts traffic only from App A
+Pods in `currency-app-a`, and it separately verifies the token signature,
+issuer, audience, lifetime, and caller email. NetworkPolicy limits the path;
+the signed token authenticates the workload.
 
-Both cells are active-active: while healthy, either region can receive a new
-request. There is no strict primary. The load balancer uses `/health/cell`,
-which returns App A's cached view of a background exchange-rate probe to local
-App B. It never calls App B synchronously.
+## Team and security boundaries
 
-Kubernetes uses `/health/ready`, which does not depend on App B. A local App B
-failure therefore leaves App A Pods ready while `/health/cell` turns unhealthy
-after three failed probes. The load balancer drains that cell. Recovery waits
-for five successful probes before the cell becomes eligible again; this slower
-path limits flapping.
+The platform layer owns namespaces, restricted Pod Security labels, Services
+and NEG annotations, service accounts, NetworkPolicies, quotas, RBAC, and cell
+configuration. App pipelines can change only their Deployments, HPAs, PDBs,
+and no platform-owned object.
 
-The measured test faulted `us-central1`. Cached health drained in 45.388
-seconds, load-balancer health drained in 61.134 seconds, and public traffic
-converged on `us-east4` in 67.804 seconds. Cache and load-balancer recovery took
-49.413 and 73.459 seconds, and all six backends returned healthy. Fifteen of 162
-requests failed during transition; none failed before the fault or after
-public convergence. The design does not claim zero downtime.
+| Role | Implemented identity and access |
+|---|---|
+| Dev | Repository review and lower environments only; no production GCP or Kubernetes principal is provisioned |
+| Ops | `satish.cse7@gmail.com`; platform/Terraform operator and current project Owner, disclosed as an assessment limitation |
+| SRE | `grafana-reader`; keyless read access to the required BigQuery and Monitoring data |
+| CI/CD | Shared `risk-cloud-build` image builder plus `currency-app-a-deployer` and `currency-app-b-deployer`, each writable only in its own namespace |
 
-## Isolation and ownership
+This is cooperative multi-tenancy for trusted internal teams. The project,
+clusters, nodes, VPC, edge, build identity, Artifact Registry repository,
+logging, BigQuery, Grafana, and cluster administrator remain shared. Separate
+clusters/projects and per-team build repositories are the stronger boundary
+for regulated or mutually untrusted workloads.
 
-Namespace ingress is denied by default. App A accepts port 8080 only from the
-documented Google frontend and health-check ranges. App B accepts port 8080
-only from App A Pods in `risk-system`. Both containers run non-root with a
-read-only root filesystem, dropped capabilities, no privilege escalation, and
-RuntimeDefault seccomp.
+## Independent delivery
 
-The live release binds only the `app-a-gateway` Kubernetes service account to
-the dedicated `currency-app-a-caller` IAM service account. App A requests an
-audience-bound, Google-signed ID token from the GKE metadata server and sends
-it to App B. App B validates the signature, issuer, audience, expiry, verified
-email, and exact caller identity. App B receives no Google identity or project
-role. A direct unauthenticated request returns `401`; authenticated calls pass
-in both cells.
+```mermaid
+flowchart LR
+  subgraph TeamA["App A team"]
+    direction TB
+    ASrc["apps/app-a-java/**"] --> ABuild["scripts/build-app-a.sh<br/>cloudbuild-app-a.yaml"]
+    ABuild --> AImage["Immutable App A SHA image"]
+    AImage --> ADeploy["scripts/deploy-app-a.sh<br/>App A deployer identity"]
+    ADeploy --> AC["currency-app-a<br/>us-central1"]
+    ADeploy --> AE["currency-app-a<br/>us-east4"]
+    AC --> AGate{"App A two-region gate"}
+    AE --> AGate
+  end
 
-Cloud Armor and Binary Authorization are implemented as opt-in Terraform
-controls. Both flags are `0` in the live environment: no Cloud Armor policy is
-attached, and neither cluster enforces Binary Authorization. This avoids their
-feature charges while keeping the reviewed implementation available for a
-separately approved rollout.
+  subgraph TeamB["App B team"]
+    direction TB
+    BSrc["apps/app-b-dotnet/**"] --> BBuild["scripts/build-app-b.sh<br/>cloudbuild-app-b.yaml"]
+    BBuild --> BImage["Immutable App B SHA image"]
+    BImage --> BDeploy["scripts/deploy-app-b.sh<br/>App B deployer identity"]
+    BDeploy --> BC["currency-app-b<br/>us-central1"]
+    BDeploy --> BE["currency-app-b<br/>us-east4"]
+    BC --> BGate{"App B two-region gate"}
+    BE --> BGate
+  end
 
-Default-deny egress is deliberately not enabled. Adding it without tested DNS,
-metadata, identity, registry, and telemetry allowances creates a larger outage
-risk than it removes in this short assessment. A production rollout should add
-and verify those paths before enforcing egress denial.
+  AGate --> PairGate{"Pair, auth, RBAC,<br/>NEG and HTTPS gates"}
+  BGate --> PairGate
+```
 
-Ownership is split by dependency boundary:
+The assessment fast path launches both app lanes and both regional applies in
+parallel, then treats the combined gate as authoritative. Each lane uses its
+own identity, kubeconfig, and work directory and can restore only its own
+previous immutable image. This is appropriate before reviewer traffic begins;
+a production rollout would normally use progressive regions or a canary to
+reduce blast radius. `cloudbuild-release.yaml` remains the coordinated build
+for a known-compatible pair, and breaking APIs still require expand-contract.
 
-- `00-bootstrap`: APIs and the $30 budget.
-- `10-global`: VPC, ranges, registry, global IP, log sink, BigQuery, IAM, and
-  the optional Binary Authorization policy.
-- `20-cluster`: two regional Autopilot clusters and the optional admission
-  enforcement mode.
-- Kubernetes/Kustomize: workloads, Services, health, scaling, policies, and
-  fault profiles; GKE owns NEG lifecycle.
-- `30-lb`: health check, backend service, optional Cloud Armor attachment, six
-  NEG attachments, proxies, URL maps, and forwarding rules.
+A deployment passes only when:
 
-The stacks currently use ignored local Terraform state. That was acceptable
-for a single-machine assessment, but it is not a team-safe production backend.
+1. App tests, formatting, immutable-tag checks, and the vulnerability gate pass.
+2. The deployer is allowed in its own namespace and denied policy, Secret,
+   exec, and peer-namespace access.
+3. Both regional rollouts reach the exact requested image and ready replicas.
+4. Signed App A-to-App B calls return `200`; anonymous App B calls return `401`.
+5. App A cell health and all six zonal NEG backends are healthy.
+6. The public HTTPS response has the expected App B version and trace headers.
+7. An independent lane leaves the other app's image unchanged.
 
-## Failure boundaries
+## Regional failover
 
-A failed App B Pod stays inside its local ClusterIP. Failure of the whole local
-rate-provider path drains App A for that cell; the other cell has its own cluster,
-App B replicas, and NEGs. A failed App A endpoint is removed independently.
-Logging, BigQuery, Monitoring, and Grafana are outside the request path.
+```mermaid
+flowchart TB
+  Healthy["Both cells healthy"] --> Failure["One cell loses local App B"]
+  Failure --> Probe["Three failed background probes"]
+  Probe --> Unhealthy["App A cell health returns 503"]
+  Unhealthy --> Drain["Load balancer removes that cell"]
+  Drain --> Survivor["Other cell serves new requests"]
+  Survivor --> Recovery["Five successful probes"]
+  Recovery --> Restored["All zonal backends healthy again"]
+```
 
-The surviving region was sized for the bounded assessment load. HPA is not
-instant failover capacity; production capacity must be pre-provisioned and
-tested against peak regional traffic.
+The verified outcome and timings are recorded in
+[`EVIDENCE.md`](EVIDENCE.md). The claim is automatic recovery with bounded
+transition impact, not zero downtime. Capped retries for idempotent GETs with
+exponential backoff and jitter, faster health convergence, and pre-provisioned
+survivor capacity could reduce errors; that production SLO work is out of
+scope.
 
-The public origin is HTTPS-only at `satish.store`. Cloud DNS and Certificate
-Manager automate validation and renewal without putting a private key in
-Terraform state. There is no public port 80 rule or redirect. Internal
-load-balancer health checks and App A-to-App B calls remain HTTP inside the
-private service path.
+## Remaining production boundaries
+
+The internal hop is HTTP plus a signed token, not mTLS. Default-deny egress,
+Cloud Armor enforcement, Binary Authorization enforcement, remote Terraform
+state, hosted Grafana with SSO, formal SLOs, and one-region peak-capacity proof
+remain deferred or disabled. See [`FINOPS_AND_SCOPE.md`](FINOPS_AND_SCOPE.md)
+for the cost and production tradeoffs.

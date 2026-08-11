@@ -10,7 +10,7 @@ expected_project_number="458160069040"
 expected_configuration="schwab-assessment"
 expected_account="satish.cse7@gmail.com"
 expected_confirmation="destroy-schwab-assessment-gke-keep-project"
-namespace="risk-system"
+app_a_namespace="currency-app-a"
 runtime_root="$repo_root/.tmp"
 evidence_file="$repo_root/evidence/13-teardown.txt"
 neg_timeout_seconds="${NEG_GC_TIMEOUT_SECONDS:-1200}"
@@ -195,7 +195,7 @@ perform_destroy() {
     for spec in "${existing_cells[@]}"; do
       IFS='|' read -r context cluster region <<<"$spec"
       timeout --foreground --signal=INT --kill-after=10s 2m \
-        kubectl --context="$context" --namespace="$namespace" \
+        kubectl --context="$context" --namespace="$app_a_namespace" \
           --request-timeout=30s delete service app-a-gateway \
           --ignore-not-found --wait=true
     done

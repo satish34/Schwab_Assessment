@@ -21,13 +21,16 @@ SECONDARY_REGION ?= us-east4
 MAVEN_IMAGE ?= maven:3.9.11-eclipse-temurin-21
 GCLOUD_IMAGE ?= gcr.io/google.com/cloudsdktool/google-cloud-cli:525.0.0-slim
 IMAGE_TAG ?= $(shell git rev-parse --verify HEAD^{commit} 2>/dev/null)
+APP_A_IMAGE_TAG ?= $(IMAGE_TAG)
+APP_B_IMAGE_TAG ?= $(IMAGE_TAG)
 
 export PROJECT_ID BILLING_ACCOUNT_ID ADMIN_CIDR GCLOUD_CONFIGURATION DOMAIN_NAME
 export ENABLE_CLOUD_ARMOR ENABLE_BINARY_AUTHORIZATION
 export PRIMARY_REGION SECONDARY_REGION MAVEN_IMAGE GCLOUD_IMAGE
+export IMAGE_TAG APP_A_IMAGE_TAG APP_B_IMAGE_TAG
 
 .PHONY: help preflight fmt test local-up local-verify bootstrap global clusters
-.PHONY: build deploy-apps wait-negs lb-plan lb verify verify-armor test-armor seed-traffic verify-bigquery verify-grafana
+.PHONY: build build-app-a build-app-b deploy-apps deploy-app-a deploy-app-b wait-negs lb-plan lb verify verify-armor test-armor seed-traffic verify-bigquery verify-grafana
 .PHONY: verify-error-reporting verify-binauthz test-binauthz-denial test-failover
 .PHONY: capture-evidence plan-check secret-scan destroy orphan-check
 
@@ -41,8 +44,12 @@ help:
 	  'bootstrap          apply infra/00-bootstrap' \
 	  'global             apply infra/10-global' \
 	  'clusters           apply infra/20-cluster' \
-	  'build              test, build, and publish immutable images' \
+	  'build              test, build, and publish both release images' \
+	  'build-app-a        test, build, and publish only the App A image' \
+	  'build-app-b        test, build, and publish only the App B image' \
 	  'deploy-apps        deploy both regional Kubernetes overlays' \
+	  'deploy-app-a       deploy only App A to both regional cells' \
+	  'deploy-app-b       deploy only App B to both regional cells' \
 	  'wait-negs          wait for six standalone zonal NEGs' \
 	  'lb-plan            preview the global edge change after the NEG gate' \
 	  'lb                 apply infra/30-lb after the NEG gate' \
@@ -94,6 +101,7 @@ test:
 	@cd apps/app-b-dotnet && dotnet test AppB.sln --configuration Release --no-restore --nologo
 	@kubectl kustomize k8s/overlays/us-central1 >/dev/null
 	@kubectl kustomize k8s/overlays/us-east4 >/dev/null
+	@bash ./scripts/verify-kustomize-contracts.sh
 
 local-up:
 	@bash ./scripts/local-up.sh
@@ -113,11 +121,23 @@ clusters:
 build:
 	@bash ./scripts/build-images.sh
 
+build-app-a:
+	@bash ./scripts/build-app-a.sh "$(APP_A_IMAGE_TAG)"
+
+build-app-b:
+	@bash ./scripts/build-app-b.sh "$(APP_B_IMAGE_TAG)"
+
 deploy-apps:
-	@bash ./scripts/deploy-apps.sh "$(IMAGE_TAG)"
+	@bash ./scripts/deploy-apps.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
+
+deploy-app-a:
+	@bash ./scripts/deploy-app-a.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
+
+deploy-app-b:
+	@bash ./scripts/deploy-app-b.sh "$(APP_B_IMAGE_TAG)" "$(APP_A_IMAGE_TAG)"
 
 wait-negs:
-	@bash ./scripts/wait-negs.sh "$(IMAGE_TAG)"
+	@bash ./scripts/wait-negs.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 lb-plan:
 	@bash ./scripts/terraform-stack.sh infra/30-lb plan
@@ -126,9 +146,7 @@ lb:
 	@bash ./scripts/terraform-stack.sh infra/30-lb apply
 
 verify:
-	@bash ./scripts/verify-workloads.sh "$(IMAGE_TAG)"
-	@bash ./scripts/wait-negs.sh "$(IMAGE_TAG)"
-	@bash ./scripts/verify-lb.sh
+	@bash ./scripts/verify-deployment-gates.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 verify-armor:
 	@bash ./scripts/test-cloud-armor.sh verify
@@ -137,10 +155,10 @@ test-armor:
 	@bash ./scripts/test-cloud-armor.sh exercise
 
 seed-traffic:
-	@bash ./scripts/generate-traffic.sh "$(IMAGE_TAG)"
+	@bash ./scripts/generate-traffic.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 verify-bigquery:
-	@bash ./scripts/verify-bigquery.sh "$(IMAGE_TAG)"
+	@bash ./scripts/verify-bigquery.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 verify-grafana:
 	@bash ./scripts/verify-grafana.sh
@@ -155,10 +173,10 @@ test-binauthz-denial:
 	@bash ./scripts/test-binary-authorization-denial.sh
 
 test-failover:
-	@bash ./scripts/test-failover.sh "$(IMAGE_TAG)"
+	@bash ./scripts/test-failover.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 capture-evidence:
-	@bash ./scripts/capture-evidence.sh "$(IMAGE_TAG)"
+	@bash ./scripts/capture-evidence.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 plan-check:
 	@bash ./scripts/plan-check.sh

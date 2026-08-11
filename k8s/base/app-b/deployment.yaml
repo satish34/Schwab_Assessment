@@ -1,12 +1,12 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: app-a-gateway
-  namespace: risk-system
+  name: app-b-engine
+  namespace: currency-app-b
   labels:
-    app: app-a-gateway
+    app: app-b-engine
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -14,22 +14,29 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      app: app-a-gateway
+      app: app-b-engine
   template:
     metadata:
       labels:
-        app: app-a-gateway
+        app: app-b-engine
     spec:
-      serviceAccountName: app-a-gateway
+      serviceAccountName: app-b-engine
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: app-b-engine
       containers:
-        - name: app-a-gateway
-          image: app-a-image:GIT_SHA
+        - name: app-b-engine
+          image: app-b-image:GIT_SHA
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -47,25 +54,24 @@ spec:
                   name: runtime-config
                   key: SERVICE_CLUSTER
             - name: SERVICE_VERSION
-              valueFrom:
-                configMapKeyRef:
-                  name: runtime-config
-                  key: SERVICE_VERSION
-            - name: APP_B_BASE_URL
-              value: http://app-b-engine.risk-system.svc.cluster.local:8080
+              value: GIT_SHA
+            - name: FAULT_CONFIG_PATH
+              value: /etc/app-b-faults/faults.json
             - name: APP_B_AUTH_MODE
               value: google-id-token
             - name: APP_B_TOKEN_AUDIENCE
               value: https://app-b-engine.schwab-assessment.internal
+            - name: APP_A_IDENTITY_EMAIL
+              value: currency-app-a-caller@PROJECT_ID.iam.gserviceaccount.com
             - name: GOOGLE_CLOUD_PROJECT
               value: PROJECT_ID
           resources:
             requests:
               cpu: 250m
-              memory: 1Gi
+              memory: 512Mi
             limits:
               cpu: 500m
-              memory: 1280Mi
+              memory: 768Mi
           startupProbe:
             httpGet:
               path: /health/live
@@ -96,6 +102,14 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: fault-config
+              mountPath: /etc/app-b-faults
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: fault-config
+          projected:
+            sources:
+              - configMap:
+                  name: risk-faults

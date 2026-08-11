@@ -71,6 +71,10 @@ output "app_a_caller_service_account_email" {
   value = google_service_account.app_a_caller.email
 }
 
+output "app_deployer_service_account_emails" {
+  value = { for app, account in google_service_account.app_deployer : app => account.email }
+}
+
 output "binary_authorization_enabled" {
   value = var.enable_binary_authorization
 }

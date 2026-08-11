@@ -46,6 +46,21 @@ case "$stack_dir" in
     ;;
 esac
 
+if [[ "$action" == "apply" && "$stack_dir" == "infra/30-lb" ]]; then
+  : "${APP_A_IMAGE_TAG:?APP_A_IMAGE_TAG is required before the 30-lb apply}"
+  : "${APP_B_IMAGE_TAG:?APP_B_IMAGE_TAG is required before the 30-lb apply}"
+  [[ "$APP_A_IMAGE_TAG" =~ ^[0-9a-f]{40}$ \
+    && "$APP_B_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || {
+    printf 'APP_A_IMAGE_TAG and APP_B_IMAGE_TAG must be full lowercase 40-character Git SHAs.\n' >&2
+    exit 2
+  }
+  git cat-file -e "$APP_A_IMAGE_TAG^{commit}" 2>/dev/null \
+    && git cat-file -e "$APP_B_IMAGE_TAG^{commit}" 2>/dev/null || {
+    printf 'Both 30-lb release SHAs must be commits in this repository.\n' >&2
+    exit 2
+  }
+fi
+
 if [[ "$stack_dir" == "infra/20-cluster" ]]; then
   : "${ADMIN_CIDR:?ADMIN_CIDR is required for infra/20-cluster}"
 
@@ -195,5 +210,5 @@ if [[ "$action" == "apply" && "$stack_dir" == "infra/20-cluster" ]]; then
 fi
 
 if [[ "$action" == "apply" && "$stack_dir" == "infra/30-lb" ]]; then
-  bash ./scripts/verify-lb.sh
+  bash ./scripts/verify-deployment-gates.sh "$APP_A_IMAGE_TAG" "$APP_B_IMAGE_TAG"
 fi

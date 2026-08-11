@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../base/app-a
+images:
+  - name: app-a-image
+    newName: us-central1-docker.pkg.dev/PROJECT_ID/risk/app-a
+    newTag: GIT_SHA
+patches:
+  - target:
+      kind: Deployment
+      name: app-a-gateway-a
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          topology.kubernetes.io/zone: us-central1-a
+  - target:
+      kind: Deployment
+      name: app-a-gateway-b
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          topology.kubernetes.io/zone: us-central1-b
+  - target:
+      kind: Deployment
+      name: app-a-gateway-c
+    patch: |-
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value:
+          topology.kubernetes.io/zone: us-central1-c

@@ -43,8 +43,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [[ $# -ne 1 ]]; then
-  printf 'Usage: %s FULL_GIT_SHA\n' "$0" >&2
+if [[ $# -ne 2 ]]; then
+  printf 'Usage: %s FULL_APP_A_GIT_SHA FULL_APP_B_GIT_SHA\n' "$0" >&2
   exit 2
 fi
 
@@ -52,15 +52,17 @@ fi
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 : "${GCLOUD_IMAGE:?GCLOUD_IMAGE is required}"
 
-git_sha="$1"
+app_a_sha="$1"
+app_b_sha="$2"
 [[ "$PROJECT_ID" == "$expected_project" ]] \
   || fail "expected project $expected_project, received $PROJECT_ID"
 [[ "$GCLOUD_CONFIGURATION" == "$expected_configuration" ]] \
   || fail "expected gcloud configuration $expected_configuration, received $GCLOUD_CONFIGURATION"
 [[ "$GCLOUD_IMAGE" == "$expected_bq_image" ]] \
   || fail "GCLOUD_IMAGE must remain pinned to $expected_bq_image"
-[[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] \
-  || fail "the image version must be one full lowercase 40-character Git SHA"
+[[ "$app_a_sha" =~ ^[0-9a-f]{40}$ ]] \
+  && [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "both image versions must be full lowercase 40-character Git SHAs"
 [[ "$export_timeout_seconds" =~ ^[0-9]+$ ]] \
   && ((export_timeout_seconds >= 60 && export_timeout_seconds <= 1800)) \
   || fail "BQ_EXPORT_TIMEOUT_SECONDS must be between 60 and 1800"
@@ -97,8 +99,10 @@ for sql_file in "${sql_files[@]}"; do
 done
 [[ -f "$manifest" ]] \
   || fail "the current traffic manifest is missing; run make seed-traffic first"
-git cat-file -e "$git_sha^{commit}" 2>/dev/null \
-  || fail "Git SHA $git_sha is not a commit in this repository"
+for sha in "$app_a_sha" "$app_b_sha"; do
+  git cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "Git SHA $sha is not a commit in this repository"
+done
 
 active_account="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null
@@ -127,13 +131,15 @@ public_endpoint="$(jq -r '.public_endpoint.value // ""' <<<"$lb_outputs")"
 jq -e \
   --arg project "$PROJECT_ID" \
   --arg configuration "$GCLOUD_CONFIGURATION" \
-  --arg image_sha "$git_sha" \
+  --arg app_a_sha "$app_a_sha" \
+  --arg app_b_sha "$app_b_sha" \
   --arg endpoint "$public_endpoint" \
   --argjson max_age "$seed_max_age_seconds" '
-    (.schema_version == 2) and
+    (.schema_version == 3) and
     (.project_id == $project) and
     (.gcloud_configuration == $configuration) and
-    (.image_sha == $image_sha) and
+    (.app_a_sha == $app_a_sha) and
+    (.app_b_sha == $app_b_sha) and
     (.public_endpoint == $endpoint) and
     (.run_id | test("^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")) and
     (.started_at | fromdateiso8601) <= (.completed_at | fromdateiso8601) and
@@ -310,7 +316,8 @@ printf '%s\n' \
   '  e.kind,' \
   '  COUNTIF(' \
   '    l.service = e.target_service AND' \
-  '    l.service_version = '"'"$git_sha"'"' AND' \
+  '    ((e.target_service = '"'"app-a-gateway"'"' AND l.service_version = '"'"$app_a_sha"'"') OR' \
+  '     (e.target_service = '"'"app-b-engine"'"' AND l.service_version = '"'"$app_b_sha"'"')) AND' \
   '    l.region = e.region AND l.cluster = e.cluster AND' \
   '    l.method = '"'"GET"'"' AND' \
   '    ((e.target_service = '"'"app-a-gateway"'"' AND l.route = '"'"/api/exchange-rates"'"') OR' \
@@ -322,14 +329,14 @@ printf '%s\n' \
   '     (e.kind = '"'"controlled_error"'"' AND l.status_code >= 500))' \
   '  ) AS target_rows,' \
   '  COUNTIF(' \
-  '    l.service = '"'"app-a-gateway"'"' AND l.service_version = '"'"$git_sha"'"' AND' \
+  '    l.service = '"'"app-a-gateway"'"' AND l.service_version = '"'"$app_a_sha"'"' AND' \
   '    l.region = e.region AND l.cluster = e.cluster AND' \
   '    l.route = '"'"/api/exchange-rates"'"' AND l.method = '"'"GET"'"' AND' \
   '    l.trace_id = e.trace_id AND l.status_code = 200 AND' \
   '    l.decision = e.decision AND l.latency_ms >= 0 AND l.is_test = FALSE' \
   '  ) AS app_a_success_rows,' \
   '  COUNTIF(' \
-  '    l.service = '"'"app-b-engine"'"' AND l.service_version = '"'"$git_sha"'"' AND' \
+  '    l.service = '"'"app-b-engine"'"' AND l.service_version = '"'"$app_b_sha"'"' AND' \
   '    l.region = e.region AND l.cluster = e.cluster AND' \
   '    l.route = '"'"/internal/exchange-rates"'"' AND l.method = '"'"GET"'"' AND' \
   '    l.trace_id = e.trace_id AND l.status_code = 200 AND' \
@@ -460,7 +467,7 @@ for sql_file in "${sql_files[@]}"; do
         || fail "$query_name lacks a region, service, or exchange-rate result group"
       ;;
     5)
-      jq -e --arg version "$git_sha" '
+      jq -e --arg version "$app_b_sha" '
         [.[] | select(.service_version == $version)] as $current_rows |
         ($current_rows | length) >= 2 and
         ([$current_rows[].region] | unique | sort) == ["us-central1", "us-east4"] and
@@ -484,5 +491,5 @@ for output_file in \
 done
 cp -- "$manifest" "$results_dir/bigquery-seed.json"
 
-printf 'Verified current SHA %s in partitioned BigQuery rows: both regions, both services, exchange-rate results, controlled errors, authentication denials, latency, trace joins, and zero export errors.\n' \
-  "$git_sha"
+printf 'Verified App A %s / App B %s in partitioned BigQuery rows: both regions, both services, exchange-rate results, controlled errors, authentication denials, latency, trace joins, and zero export errors.\n' \
+  "$app_a_sha" "$app_b_sha"

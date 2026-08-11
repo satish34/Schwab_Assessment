@@ -16,8 +16,8 @@ fail() {
   exit 1
 }
 
-[[ $# -eq 1 ]] || {
-  printf 'Usage: %s FULL_GIT_SHA\n' "$0" >&2
+[[ $# -eq 2 ]] || {
+  printf 'Usage: %s FULL_APP_A_GIT_SHA FULL_APP_B_GIT_SHA\n' "$0" >&2
   exit 2
 }
 : "${PROJECT_ID:?PROJECT_ID is required}"
@@ -32,11 +32,15 @@ for feature_flag in enable_cloud_armor enable_binary_authorization; do
     || fail "${feature_flag^^} must be 0 or 1"
 done
 
-git_sha="$1"
-[[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] \
-  || fail "the deployed image version must be a full lowercase Git SHA"
-git cat-file -e "$git_sha^{commit}" 2>/dev/null \
-  || fail "Git SHA $git_sha is not present in this repository"
+app_a_sha="$1"
+app_b_sha="$2"
+[[ "$app_a_sha" =~ ^[0-9a-f]{40}$ ]] \
+  && [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
+  || fail "both deployed image versions must be full lowercase Git SHAs"
+for sha in "$app_a_sha" "$app_b_sha"; do
+  git cat-file -e "$sha^{commit}" 2>/dev/null \
+    || fail "Git SHA $sha is not present in this repository"
+done
 [[ "$PROJECT_ID" == "$expected_project" ]] \
   || fail "expected project $expected_project"
 [[ "$GCLOUD_CONFIGURATION" == "$expected_configuration" ]] \
@@ -123,13 +127,15 @@ jq -er \
   ' <<<"$budgets_json" >"$work_dir/01-budget.txt" \
   || fail "the live budget does not match the frozen contract"
 
-bash "$repo_root/scripts/verify-workloads.sh" "$git_sha" \
+bash "$repo_root/scripts/verify-workloads.sh" "$app_a_sha" "$app_b_sha" \
   >"$work_dir/02-clusters.txt" 2>&1
 bash "$repo_root/scripts/verify-global.sh" \
   >"$work_dir/service-auth-global.txt" 2>&1
+bash "$repo_root/scripts/verify-team-isolation.sh" \
+  >"$work_dir/17-team-isolation.txt" 2>&1
 
 auth_log_json="$work_dir/service-auth-logging.json"
-auth_log_filter="resource.type=\"k8s_container\" AND jsonPayload.service=\"app-b-engine\" AND jsonPayload.service_version=\"$git_sha\" AND jsonPayload.decision=\"AUTH_REJECTED\" AND jsonPayload.status_code=401"
+auth_log_filter="resource.type=\"k8s_container\" AND resource.labels.namespace_name=\"currency-app-b\" AND jsonPayload.service=\"app-b-engine\" AND jsonPayload.service_version=\"$app_b_sha\" AND jsonPayload.decision=\"AUTH_REJECTED\" AND jsonPayload.status_code=401"
 auth_deadline=$((SECONDS + 180))
 while ((SECONDS < auth_deadline)); do
   timeout --foreground --signal=INT --kill-after=10s 2m \
@@ -137,7 +143,7 @@ while ((SECONDS < auth_deadline)); do
       --account="$expected_account" --project="$PROJECT_ID" \
       logging read "$auth_log_filter" --freshness=30m --limit=100 \
       --order=desc --format=json >"$auth_log_json"
-  if jq -e --arg version "$git_sha" '
+  if jq -e --arg version "$app_b_sha" '
       [ .[] | .jsonPayload
         | select(
             .service == "app-b-engine" and
@@ -154,7 +160,7 @@ while ((SECONDS < auth_deadline)); do
   fi
   sleep 5
 done
-jq -e --arg version "$git_sha" '
+jq -e --arg version "$app_b_sha" '
   [ .[] | .jsonPayload
     | select(
         .service == "app-b-engine" and
@@ -170,7 +176,7 @@ jq -e --arg version "$git_sha" '
   || fail "structured AUTH_REJECTED logs were not observed in both cells"
 {
   command cat -- "$work_dir/service-auth-global.txt"
-  jq --arg version "$git_sha" '
+  jq --arg version "$app_b_sha" '
     [ .[]
       | {
           timestamp,
@@ -200,7 +206,7 @@ jq -e --arg version "$git_sha" '
   || fail "service-auth evidence contains token-like material"
 
 export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
-evidence_kubeconfig="$runtime_root/kubeconfig-schwab-assessment"
+evidence_kubeconfig="$runtime_root/kubeconfig-verifier"
 [[ -s "$evidence_kubeconfig" ]] \
   || fail "the workload verifier did not leave its isolated kubeconfig"
 case "$(uname -s)" in
@@ -212,11 +218,18 @@ for context in gke-risk-usc1 gke-risk-use4; do
     MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
       --context="$context" --request-timeout=20s get nodes -o json
   )"
-  pods_json="$(
+  app_a_pods_json="$(
     MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
-      --context="$context" --namespace=risk-system --request-timeout=20s \
-      get pods --selector='app in (app-a-gateway,app-b-engine)' -o json
+      --context="$context" --namespace=currency-app-a --request-timeout=20s \
+      get pods --selector='app=app-a-gateway' -o json
   )"
+  app_b_pods_json="$(
+    MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
+      --context="$context" --namespace=currency-app-b --request-timeout=20s \
+      get pods --selector='app=app-b-engine' -o json
+  )"
+  pods_json="$(jq -n --argjson app_a "$app_a_pods_json" --argjson app_b "$app_b_pods_json" \
+    '{items: ($app_a.items + $app_b.items)}')"
   jq -e '
     (.items | length) >= 3 and
     all(.items[];
@@ -261,9 +274,9 @@ for context in gke-risk-usc1 gke-risk-use4; do
     ' <<<"$pods_json"
   } >>"$work_dir/02-clusters.txt"
 done
-bash "$repo_root/scripts/wait-negs.sh" "$git_sha" \
+bash "$repo_root/scripts/wait-negs.sh" "$app_a_sha" "$app_b_sha" \
   >"$work_dir/03-negs.txt" 2>&1
-bash "$repo_root/scripts/verify-lb.sh" \
+bash "$repo_root/scripts/verify-lb.sh" "$app_a_sha" "$app_b_sha" \
   >"$work_dir/04-backend-health-before.txt" 2>&1
 
 lb_outputs="$(terraform -chdir=infra/30-lb output -json)"
@@ -285,7 +298,7 @@ http_status="$(
 [[ "$http_status" == "200" ]] || fail "public evidence request returned HTTP $http_status"
 jq -e \
   --slurpfile expected "$repo_root/testdata/expected-exchange-rates.json" \
-  --arg version "$git_sha" '
+  --arg version "$app_b_sha" '
   (keys == ["baseCurrency", "disclaimer", "providedBy", "rateSnapshots"]) and
   (.rateSnapshots | length == 10) and
   all(.rateSnapshots[]; keys == ["EUR", "GBP", "JPY"]) and
@@ -303,7 +316,7 @@ jq -e \
   || fail "public response does not match the immutable contract"
 
 logging_json="$work_dir/logging.json"
-logging_filter="resource.type=\"k8s_container\" AND jsonPayload.log_type=\"request\" AND jsonPayload.service_version=\"$git_sha\" AND jsonPayload.method=\"GET\" AND ((jsonPayload.service=\"app-a-gateway\" AND jsonPayload.route=\"/api/exchange-rates\") OR (jsonPayload.service=\"app-b-engine\" AND jsonPayload.route=\"/internal/exchange-rates\"))"
+logging_filter="resource.type=\"k8s_container\" AND jsonPayload.log_type=\"request\" AND jsonPayload.method=\"GET\" AND ((resource.labels.namespace_name=\"currency-app-a\" AND jsonPayload.service=\"app-a-gateway\" AND jsonPayload.service_version=\"$app_a_sha\" AND jsonPayload.route=\"/api/exchange-rates\") OR (resource.labels.namespace_name=\"currency-app-b\" AND jsonPayload.service=\"app-b-engine\" AND jsonPayload.service_version=\"$app_b_sha\" AND jsonPayload.route=\"/internal/exchange-rates\"))"
 timeout --foreground --signal=INT --kill-after=10s 2m \
   gcloud --configuration="$GCLOUD_CONFIGURATION" \
     --account="$expected_account" --project="$PROJECT_ID" \
@@ -341,7 +354,7 @@ jq -e 'length == 2' "$work_dir/06-logging.txt" >/dev/null \
   || fail "logging evidence does not contain exactly one service pair"
 
 if ! BQ_SEED_MAX_AGE_SECONDS="${BQ_SEED_MAX_AGE_SECONDS:-21600}" \
-  bash "$repo_root/scripts/verify-bigquery.sh" "$git_sha" \
+  bash "$repo_root/scripts/verify-bigquery.sh" "$app_a_sha" "$app_b_sha" \
     >"$work_dir/bigquery-verifier.txt" 2>&1; then
   command cat -- "$work_dir/bigquery-verifier.txt" >&2
   fail "BigQuery evidence verification failed"
@@ -488,6 +501,7 @@ expected_outputs=(
   14-service-auth.txt
   15-cloud-armor.txt
   16-binary-authorization.txt
+  17-team-isolation.txt
 )
 for output_name in "${expected_outputs[@]}"; do
   source_file="$work_dir/$output_name"
@@ -497,4 +511,5 @@ for output_name in "${expected_outputs[@]}"; do
   mv -f -- "$work_dir/$output_name" "$evidence_dir/$output_name"
 done
 
-printf 'Captured non-secret release evidence 01-07 and hardening evidence 14-16 for deployed SHA %s.\n' "$git_sha"
+printf 'Captured non-secret release evidence for App A %s / App B %s, including team isolation.\n' \
+  "$app_a_sha" "$app_b_sha"

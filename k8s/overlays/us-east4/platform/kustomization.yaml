@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../base/platform
+configMapGenerator:
+  - name: runtime-config
+    namespace: currency-app-a
+    behavior: replace
+    literals:
+      - SERVICE_REGION=us-east4
+      - SERVICE_CLUSTER=gke-risk-use4
+  - name: runtime-config
+    namespace: currency-app-b
+    behavior: replace
+    literals:
+      - SERVICE_REGION=us-east4
+      - SERVICE_CLUSTER=gke-risk-use4
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - target:
+      kind: Service
+      name: app-a-gateway
+      namespace: currency-app-a
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"exposed_ports":{"8080":{"name":"app-a-neg-use4"}}}'

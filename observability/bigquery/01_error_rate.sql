@@ -4,6 +4,7 @@ WITH requests AS (
     SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code
   FROM `PROJECT_ID.risk_logs.stdout`
   WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 6 HOUR)
+    AND resource.labels.namespace_name = 'currency-app-a'
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
     AND jsonPayload.route = '/api/exchange-rates'

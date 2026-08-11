@@ -69,3 +69,6 @@ output/playwright/
 
 # Private interview working notes (never commit)
 .private/INTERVIEW_FOLLOWUP_NOTES.md
+
+# Local agent instructions (never publish)
+/AGENTS.md

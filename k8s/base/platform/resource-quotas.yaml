@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: application-capacity
+  namespace: currency-app-a
+spec:
+  hard:
+    pods: "12"
+    requests.cpu: "3"
+    requests.memory: 12Gi
+    limits.cpu: "6"
+    limits.memory: 16Gi
+    count/deployments.apps: "6"
+    count/horizontalpodautoscalers.autoscaling: "6"
+    configmaps: "8"
+    services: "4"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: application-capacity
+  namespace: currency-app-b
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "3"
+    requests.memory: 8Gi
+    limits.cpu: "6"
+    limits.memory: 12Gi
+    count/deployments.apps: "3"
+    count/horizontalpodautoscalers.autoscaling: "3"
+    configmaps: "8"
+    services: "4"
