@@ -2,8 +2,8 @@
 
 App A serves a static demo UI at `GET /` and a no-input JSON API at
 `GET /api/exchange-rates`. The API calls only the cell-local App B endpoint at
-`GET /internal/exchange-rates` and returns its deterministic ten-snapshot
-synthetic rate catalog unchanged.
+`app-b-engine.currency-app-b.svc.cluster.local` and returns its deterministic
+ten-snapshot synthetic rate catalog unchanged.
 
 Both UI and API responses use `Cache-Control: no-store`. The browser also uses
 `cache: "no-store"` when it loads rates. The page and payload state clearly
@@ -12,7 +12,9 @@ that the values are synthetic and not for financial use.
 The page shows snapshot 1 after its automatic request. Every **Refresh rates**
 click makes another no-input `GET`, then advances a browser-local index through
 the ten snapshots and wraps back to snapshot 1. No selection is sent to the
-services, and no pod stores demo state.
+services, and no pod stores demo state. The visible request metadata is limited
+to the serving GCP region and the exact trace ID used by structured
+logs; internal service, cluster, and image-version details remain out of the UI.
 
 Liveness and readiness never call App B. `/health/cell` reads the cached result
 of the background probe, which uses the same internal exchange-rate endpoint.
@@ -24,10 +26,10 @@ Runtime values are `SERVICE_REGION`, `SERVICE_CLUSTER`, `SERVICE_VERSION`, and
 `APP_B_TOKEN_AUDIENCE=https://app-b-engine.schwab-assessment.internal`. App A
 gets a short-lived Google-signed ID token from the GKE metadata server, caches
 it, and sends it as a bearer token on every App B request. Local Compose sets
-the authentication mode to `disabled` explicitly with the `local` Spring
-profile; startup rejects disabled mode under any other profile. Metadata calls
-have a separate three-second timeout and one bounded retry. The service listens
-on port `8080`.
+the authentication mode to `disabled` explicitly with the dedicated
+`local-compose` Spring profile; startup rejects disabled mode under every
+normal runtime profile. Metadata calls have a separate three-second timeout
+and one bounded retry. The service listens on port `8080`.
 
 Every response sets `nosniff`, frame denial, and a hash-based CSP with no
 `unsafe-inline`. HSTS is emitted only when the servlet request is secure or the
@@ -47,3 +49,7 @@ When App B is available locally, open `http://127.0.0.1:8080/` or call:
 ```bash
 curl --fail-with-body http://127.0.0.1:8080/api/exchange-rates
 ```
+
+`make build-app-a` and `make deploy-app-a` use the App A-only Cloud Build
+definition, deployer identity, kubeconfig, and `currency-app-a` workload
+overlay. The App B image and namespace are not mutated.

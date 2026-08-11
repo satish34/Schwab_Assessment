@@ -34,7 +34,7 @@ class HttpClientConfigurationTest {
               "exchange.cell-recovery-threshold=5");
 
   @Test
-  void disabledModeFailsStartupWithoutAnExplicitLocalOrTestProfile() {
+  void disabledModeFailsStartupWithoutAnExplicitLocalComposeOrTestProfile() {
     contextRunner
         .withPropertyValues("exchange.app-b-auth-mode=disabled")
         .run(
@@ -42,14 +42,28 @@ class HttpClientConfigurationTest {
               assertThat(context).hasFailed();
               assertThat(context.getStartupFailure())
                   .hasRootCauseMessage(
-                      "APP_B_AUTH_MODE=disabled requires the local or test Spring profile");
+                      "APP_B_AUTH_MODE=disabled requires the local-compose or test Spring profile");
             });
   }
 
   @Test
-  void disabledModeStartsOnlyUnderTheExplicitLocalProfile() {
+  void disabledModeRejectsTheGenericLocalProfile() {
     contextRunner
         .withPropertyValues("exchange.app-b-auth-mode=disabled", "spring.profiles.active=local")
+        .run(
+            context -> {
+              assertThat(context).hasFailed();
+              assertThat(context.getStartupFailure())
+                  .hasRootCauseMessage(
+                      "APP_B_AUTH_MODE=disabled requires the local-compose or test Spring profile");
+            });
+  }
+
+  @Test
+  void disabledModeStartsOnlyUnderTheExplicitLocalComposeProfile() {
+    contextRunner
+        .withPropertyValues(
+            "exchange.app-b-auth-mode=disabled", "spring.profiles.active=local-compose")
         .run(
             context -> {
               assertThat(context).hasNotFailed();

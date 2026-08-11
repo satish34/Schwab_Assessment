@@ -54,6 +54,7 @@ public class ExchangeRateRequestContextFilter extends OncePerRequestFilter {
     RequestTelemetry telemetry = new RequestTelemetry(resolution.context());
     request.setAttribute(RequestTelemetry.ATTRIBUTE, telemetry);
     response.setHeader("x-correlation-id", resolution.context().correlationId());
+    response.setHeader("x-trace-id", resolution.context().traceId());
     response.setHeader("traceparent", resolution.context().traceparent());
     response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
 

@@ -93,19 +93,19 @@ docker inspect "$app_b_id" | jq -e '.[0].NetworkSettings.Ports["8080/tcp"] == nu
   >/dev/null || fail "App B unexpectedly has a published host port"
 
 auth_audience="https://app-b-engine.schwab-assessment.internal"
-security_csp="default-src 'none'; script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+security_csp="default-src 'none'; script-src 'sha256-9cpFYLGEb43nFRxcezVuHD2huh05Y6/t011BpLqwRvE='; style-src 'sha256-B3k4aPo0RwYE847u9eMw0awwLce/65GM8iBUMLVg54Q='; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 docker inspect "$app_a_id" | jq -e \
   --arg mode "APP_B_AUTH_MODE=disabled" \
   --arg audience "APP_B_TOKEN_AUDIENCE=$auth_audience" \
   --arg project "GOOGLE_CLOUD_PROJECT=$project_id" \
-  --arg profile "SPRING_PROFILES_ACTIVE=local" '
+  --arg profile "SPRING_PROFILES_ACTIVE=local-compose" '
     (.[0].Config.Env | index($mode)) != null and
     (.[0].Config.Env | index($audience)) != null and
     (.[0].Config.Env | index($project)) != null and
     (.[0].Config.Env | index($profile)) != null
   ' >/dev/null || fail "local App A must use the explicit no-metadata auth mode"
 docker inspect "$app_b_id" | jq -e \
-  --arg environment "ASPNETCORE_ENVIRONMENT=Development" \
+  --arg environment "ASPNETCORE_ENVIRONMENT=LocalCompose" \
   --arg mode "APP_B_AUTH_MODE=disabled" \
   --arg audience "APP_B_TOKEN_AUDIENCE=$auth_audience" \
   --arg project "GOOGLE_CLOUD_PROJECT=$project_id" \
@@ -244,11 +244,16 @@ for marker in \
   'data-api-endpoint="/api/exchange-rates"' \
   'data-snapshot-count="10"' \
   'id="sample-position"' \
+  'id="serving-region"' \
+  'id="trace-id"' \
   'payload.rateSnapshots.length !== 10' \
   'let sampleIndex = -1' \
   'if (advanceSample || sampleIndex < 0)' \
   'sampleIndex = (sampleIndex + 1) % payload.rateSnapshots.length' \
   'cache: "no-store"' \
+  'response.headers.get("x-trace-id")' \
+  'Region: ${source.region}' \
+  'Trace ID: ${traceId}' \
   'loadRates(true)' \
   'loadRates(false)' \
   'Synthetic demonstration rates - not for financial use.' \
@@ -257,6 +262,10 @@ for marker in \
   'data-currency="JPY"'; do
   grep -F -q -- "$marker" "$work_dir/index.html" \
     || fail "App A UI is missing marker: $marker"
+done
+for hidden_marker in '${source.service}' '${source.cluster}' '${source.version}'; do
+  ! grep -F -q -- "$hidden_marker" "$work_dir/index.html" \
+    || fail "App A UI exposes internal metadata: $hidden_marker"
 done
 
 for attempt in 1 2; do
@@ -283,11 +292,14 @@ for attempt in 1 2; do
     || fail "exchange-rate response $attempt is missing hardened security headers"
 
   returned_correlation="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="x-correlation-id" {print $2}' | tail -n 1)"
+  returned_trace_id="$(header_value "$headers" x-trace-id)"
   returned_traceparent="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="traceparent" {print $2}' | tail -n 1)"
   [[ "$returned_correlation" == "$correlation_id" ]] \
     || fail "App A did not preserve the response correlation ID"
   [[ "$returned_traceparent" == "$traceparent" ]] \
     || fail "App A did not preserve the response trace context"
+  [[ "$returned_trace_id" == "$trace_id" ]] \
+    || fail "App A response trace ID does not match the structured-log trace ID"
 done
 
 jq -S -c . "$work_dir/response-1.json" >"$work_dir/response-1.canonical"
@@ -306,11 +318,15 @@ generated_status="$(curl --silent --show-error --max-time 5 \
 assert_exchange_rates "$work_dir/generated-response.json" \
   us-central1 local-compose "$expected_service_version"
 generated_correlation="$(header_value "$generated_headers" x-correlation-id)"
+generated_trace_id="$(header_value "$generated_headers" x-trace-id)"
 generated_traceparent="$(header_value "$generated_headers" traceparent)"
 [[ "$generated_correlation" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] \
   || fail "App A did not generate a valid correlation ID"
 [[ "$generated_traceparent" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f]$ ]] \
   || fail "App A did not generate valid trace context"
+[[ "$generated_trace_id" =~ ^[0-9a-f]{32}$ ]] \
+  && [[ "$generated_trace_id" == "${generated_traceparent:3:32}" ]] \
+  || fail "App A did not expose the generated structured-log trace ID"
 
 wait_for_request_logs() {
   local deadline=$((SECONDS + 15))
@@ -381,6 +397,8 @@ fault_status="$(curl --silent --show-error --max-time 5 \
   || fail "faulted dependency did not preserve the correlation ID"
 [[ "$(header_value "$fault_headers" traceparent)" == "$fault_traceparent" ]] \
   || fail "faulted dependency did not preserve the trace context"
+[[ "$(header_value "$fault_headers" x-trace-id)" == "$fault_trace_id" ]] \
+  || fail "faulted dependency did not expose the structured-log trace ID"
 jq -e '
   .error == "DEPENDENCY_UNAVAILABLE" and
   .message == "Exchange rates are temporarily unavailable"

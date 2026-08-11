@@ -25,7 +25,7 @@ exchange:
   region: "${SERVICE_REGION:local}"
   cluster: "${SERVICE_CLUSTER:local}"
   service-version: "${SERVICE_VERSION:dev}"
-  app-b-base-url: "${APP_B_BASE_URL:http://app-b-engine.risk-system.svc.cluster.local:8080}"
+  app-b-base-url: "${APP_B_BASE_URL:http://app-b-engine.currency-app-b.svc.cluster.local:8080}"
   app-b-auth-mode: "${APP_B_AUTH_MODE:google-id-token}"
   app-b-token-audience: "${APP_B_TOKEN_AUDIENCE:https://app-b-engine.schwab-assessment.internal}"
   google-cloud-project: "${GOOGLE_CLOUD_PROJECT:}"

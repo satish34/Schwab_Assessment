@@ -26,7 +26,12 @@ audience `https://app-b-engine.schwab-assessment.internal` and the exact
 `currency-app-a-caller` service-account email. Signature, issuer, audience,
 lifetime, email, and `email_verified` are checked before the request runs;
 health endpoints remain open for Kubernetes. Local Compose explicitly uses
-`APP_B_AUTH_MODE=disabled` in the Development environment. Production cannot
-start with authentication disabled.
+`APP_B_AUTH_MODE=disabled` in the custom `LocalCompose` environment. The
+framework `Development`, `Staging`, and `Production` environments cannot start
+with authentication disabled.
 
 Rates are synthetic and are not for financial use.
+
+`make build-app-b` and `make deploy-app-b` use the App B-only Cloud Build
+definition, deployer identity, kubeconfig, and `currency-app-b` workload
+overlay. The App A image and namespace are not mutated.

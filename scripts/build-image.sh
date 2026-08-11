@@ -4,6 +4,27 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  printf 'Usage: %s APP_NAME [FULL_GIT_SHA]\n' "$0" >&2
+  exit 2
+fi
+
+image_name="$1"
+case "$image_name" in
+  app-a)
+    build_config="cloudbuild-app-a.yaml"
+    dockerfile="apps/app-a-java/Dockerfile"
+    ;;
+  app-b)
+    build_config="cloudbuild-app-b.yaml"
+    dockerfile="apps/app-b-dotnet/Dockerfile"
+    ;;
+  *)
+    printf 'APP_NAME must be app-a or app-b.\n' >&2
+    exit 2
+    ;;
+esac
+
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
 
@@ -41,9 +62,14 @@ configured_project="$(
   exit 1
 }
 
-git_sha="$(git rev-parse --verify HEAD^{commit})"
+head_sha="$(git rev-parse --verify HEAD^{commit})"
+git_sha="${2:-$head_sha}"
 [[ "$git_sha" =~ ^[0-9a-f]{40}$ ]] || {
-  printf 'HEAD did not resolve to one full lowercase Git SHA.\n' >&2
+  printf 'The image version must be one full lowercase 40-character Git SHA.\n' >&2
+  exit 1
+}
+[[ "$git_sha" == "$head_sha" ]] || {
+  printf 'The requested image version must match the current HEAD commit.\n' >&2
   exit 1
 }
 
@@ -114,10 +140,7 @@ upload_files="$(
     meta list-files-for-upload . \
     | tr '\134' '/'
 )"
-for required_file in \
-  cloudbuild-release.yaml \
-  apps/app-a-java/Dockerfile \
-  apps/app-b-dotnet/Dockerfile; do
+for required_file in "$build_config" "$dockerfile"; do
   grep -Fx -- "$required_file" <<<"$upload_files" >/dev/null || {
     printf 'Cloud Build source would omit required file %s.\n' "$required_file" >&2
     exit 1
@@ -134,39 +157,21 @@ if [[ -n "$sensitive_files" ]]; then
   exit 1
 fi
 
-image_inventory() {
-  local image_name="$1"
+inventory="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" \
     --account="$expected_account" \
     --project="$PROJECT_ID" \
     artifacts docker images list "$repository/$image_name" \
     --include-tags \
     --format=json
-}
-
-app_a_inventory="$(image_inventory app-a)"
-app_b_inventory="$(image_inventory app-b)"
-tag_exists() {
-  local inventory="$1"
-  jq -e --arg sha "$git_sha" \
-    'any(.[]; any((.tags // [])[]; . == $sha))' \
-    <<<"$inventory" >/dev/null
-}
-
-app_a_exists=0
-app_b_exists=0
-tag_exists "$app_a_inventory" && app_a_exists=1
-tag_exists "$app_b_inventory" && app_b_exists=1
-
-if ((app_a_exists == 1 && app_b_exists == 1)); then
-  printf 'Both immutable tags already exist; verifying them without rebuilding.\n'
-  bash scripts/verify-images.sh "$git_sha" "$git_sha"
+)"
+if jq -e --arg sha "$git_sha" \
+  'any(.[]; any((.tags // [])[]; . == $sha))' \
+  <<<"$inventory" >/dev/null; then
+  printf 'Immutable tag for %s already exists; verifying it without rebuilding.\n' \
+    "$image_name"
+  bash scripts/verify-image.sh "$image_name" "$git_sha"
   exit 0
-fi
-if ((app_a_exists != app_b_exists)); then
-  printf 'Only one image exists for %s; refusing a partial coordinated rebuild.\n' \
-    "$git_sha" >&2
-  exit 1
 fi
 
 service_account_resource="projects/$PROJECT_ID/serviceAccounts/$build_service_account"
@@ -174,7 +179,7 @@ gcloud --configuration="$GCLOUD_CONFIGURATION" \
   --account="$expected_account" \
   --project="$PROJECT_ID" \
   builds submit . \
-  --config=cloudbuild-release.yaml \
+  --config="$build_config" \
   --gcs-source-staging-dir="gs://$build_source_bucket/source" \
   --ignore-file=.gcloudignore \
   --region="$build_region" \
@@ -183,4 +188,4 @@ gcloud --configuration="$GCLOUD_CONFIGURATION" \
   --timeout=30m \
   --quiet
 
-bash scripts/verify-images.sh "$git_sha" "$git_sha"
+bash scripts/verify-image.sh "$image_name" "$git_sha"

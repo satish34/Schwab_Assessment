@@ -16,6 +16,7 @@ public sealed record AppBAuthenticationSettings(
     public const string DefaultAudience = "https://app-b-engine.schwab-assessment.internal";
     public const string GoogleIdTokenModeName = "google-id-token";
     public const string DisabledModeName = "disabled";
+    public const string LocalComposeEnvironmentName = "LocalCompose";
     private const string CallerEmailPrefix = "currency-app-a-caller@";
     private const string CallerEmailSuffix = ".iam.gserviceaccount.com";
 
@@ -34,10 +35,11 @@ public sealed record AppBAuthenticationSettings(
 
         if (mode == AppBAuthenticationMode.Disabled)
         {
-            if (!environment.IsDevelopment() && !environment.IsEnvironment("Testing"))
+            if (!environment.IsEnvironment(LocalComposeEnvironmentName) &&
+                !environment.IsEnvironment("Testing"))
             {
                 throw new InvalidOperationException(
-                    "APP_B_AUTH_MODE=disabled is allowed only for local development and tests.");
+                    "APP_B_AUTH_MODE=disabled is allowed only in the LocalCompose or Testing environment.");
             }
 
             return new AppBAuthenticationSettings(mode, DefaultAudience, string.Empty);

@@ -36,12 +36,12 @@ public class HttpClientConfiguration {
   AppBIdentityTokenProvider appBIdentityTokenProvider(
       AppAProperties properties, ObjectMapper objectMapper, Environment environment) {
     if (properties.appBAuthMode() == AppBAuthMode.DISABLED) {
-      boolean localOrTestProfile =
+      boolean localComposeOrTestProfile =
           Arrays.stream(environment.getActiveProfiles())
-              .anyMatch(profile -> profile.equals("local") || profile.equals("test"));
-      if (!localOrTestProfile) {
+              .anyMatch(profile -> profile.equals("local-compose") || profile.equals("test"));
+      if (!localComposeOrTestProfile) {
         throw new IllegalStateException(
-            "APP_B_AUTH_MODE=disabled requires the local or test Spring profile");
+            "APP_B_AUTH_MODE=disabled requires the local-compose or test Spring profile");
       }
       return DisabledAppBIdentityTokenProvider.INSTANCE;
     }

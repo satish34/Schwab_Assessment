@@ -17,8 +17,8 @@ public final class SecurityResponseHeadersFilter extends OncePerRequestFilter {
 
   static final String CONTENT_SECURITY_POLICY =
       "default-src 'none'; "
-          + "script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; "
-          + "style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; "
+          + "script-src 'sha256-9cpFYLGEb43nFRxcezVuHD2huh05Y6/t011BpLqwRvE='; "
+          + "style-src 'sha256-B3k4aPo0RwYE847u9eMw0awwLce/65GM8iBUMLVg54Q='; "
           + "img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
           + "frame-ancestors 'none'";
   static final String HSTS_POLICY = "max-age=31536000; includeSubDomains";

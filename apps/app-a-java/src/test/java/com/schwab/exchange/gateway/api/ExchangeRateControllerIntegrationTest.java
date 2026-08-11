@@ -50,8 +50,8 @@ class ExchangeRateControllerIntegrationTest {
   private static final String DISCLAIMER = TestExchangeRateFixtures.DISCLAIMER;
   private static final String CONTENT_SECURITY_POLICY =
       "default-src 'none'; "
-          + "script-src 'sha256-oyGuofv9//RyMH/7VQwVrJ/vF8TYjwB0BeVProcmG+Q='; "
-          + "style-src 'sha256-P9bnUBuQ4W03qFSsQaCTYhosTNMbOJQ6TnRvi01dQl8='; "
+          + "script-src 'sha256-9cpFYLGEb43nFRxcezVuHD2huh05Y6/t011BpLqwRvE='; "
+          + "style-src 'sha256-B3k4aPo0RwYE847u9eMw0awwLce/65GM8iBUMLVg54Q='; "
           + "img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
           + "frame-ancestors 'none'";
 
@@ -84,6 +84,7 @@ class ExchangeRateControllerIntegrationTest {
             .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
             .andExpect(header().stringValues(HttpHeaders.CACHE_CONTROL, "no-store"))
             .andExpect(header().string("x-correlation-id", CORRELATION_ID))
+            .andExpect(header().string("x-trace-id", "4bf92f3577b34da6a3ce929d0e0e4736"))
             .andExpect(header().string("traceparent", TRACEPARENT))
             .andExpect(jsonPath("$.baseCurrency").value("USD"))
             .andExpect(jsonPath("$.rateSnapshots.length()").value(10))
@@ -114,21 +115,24 @@ class ExchangeRateControllerIntegrationTest {
     when(appBClient.getExchangeRates(any(TraceContext.class), eq(false)))
         .thenReturn(new DownstreamResult(response, 4));
 
-    String generatedCorrelation =
+    var result =
         mockMvc
             .perform(get("/api/exchange-rates"))
             .andExpect(status().isOk())
             .andExpect(header().exists("x-correlation-id"))
+            .andExpect(header().exists("x-trace-id"))
             .andExpect(header().exists("traceparent"))
-            .andReturn()
-            .getResponse()
-            .getHeader("x-correlation-id");
+            .andReturn();
+
+    String generatedCorrelation = result.getResponse().getHeader("x-correlation-id");
+    String generatedTraceId = result.getResponse().getHeader("x-trace-id");
 
     assertThat(UUID.fromString(generatedCorrelation).toString()).isEqualTo(generatedCorrelation);
+    assertThat(generatedTraceId).matches("[0-9a-f]{32}");
     ArgumentCaptor<TraceContext> traceCaptor = ArgumentCaptor.forClass(TraceContext.class);
     verify(appBClient).getExchangeRates(traceCaptor.capture(), eq(false));
     assertThat(traceCaptor.getValue().correlationId()).isEqualTo(generatedCorrelation);
-    assertThat(traceCaptor.getValue().traceId()).matches("[0-9a-f]{32}");
+    assertThat(traceCaptor.getValue().traceId()).isEqualTo(generatedTraceId);
   }
 
   @Test
@@ -294,6 +298,8 @@ class ExchangeRateControllerIntegrationTest {
         .contains("data-api-endpoint=\"/api/exchange-rates\"")
         .contains("data-snapshot-count=\"10\"")
         .contains("id=\"sample-position\"")
+        .contains("id=\"serving-region\"")
+        .contains("id=\"trace-id\"")
         .contains("Synthetic demonstration rates - not for financial use.")
         .contains("data-currency=\"EUR\"")
         .contains("data-currency=\"GBP\"")
@@ -307,8 +313,14 @@ class ExchangeRateControllerIntegrationTest {
         .contains("Number(rates[currency]).toFixed(2)")
         .contains("clearDisplayedRates();")
         .contains("cache: \"no-store\"")
+        .contains("response.headers.get(\"x-trace-id\")")
+        .contains("`Region: ${source.region}`")
+        .contains("`Trace ID: ${traceId}`")
         .contains("loadRates(true)")
         .contains("loadRates(false)")
+        .doesNotContain("${source.service}")
+        .doesNotContain("${source.cluster}")
+        .doesNotContain("${source.version}")
         .doesNotContain("headers: { Accept");
     assertThat(html.indexOf("await fetch(endpoint"))
         .isLessThan(html.indexOf("sampleIndex = (sampleIndex + 1)"));

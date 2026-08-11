@@ -39,8 +39,11 @@ public sealed class CallerAuthenticationTests
         Assert.Equal(CallerEmail, settings.ExpectedCallerEmail);
     }
 
-    [Fact]
-    public void DisabledModeIsRejectedOutsideDevelopmentAndTests()
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Staging")]
+    [InlineData("Production")]
+    public void DisabledModeIsRejectedOutsideLocalComposeAndTests(string environmentName)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -52,9 +55,9 @@ public sealed class CallerAuthenticationTests
         var exception = Assert.Throws<InvalidOperationException>(() =>
             AppBAuthenticationSettings.FromConfiguration(
                 configuration,
-                new TestHostEnvironment(Environments.Production)));
+                new TestHostEnvironment(environmentName)));
 
-        Assert.Contains("only for local development and tests", exception.Message);
+        Assert.Contains("LocalCompose or Testing", exception.Message);
     }
 
     [Theory]
@@ -106,9 +109,9 @@ public sealed class CallerAuthenticationTests
     }
 
     [Theory]
-    [InlineData("Development")]
+    [InlineData(AppBAuthenticationSettings.LocalComposeEnvironmentName)]
     [InlineData("Testing")]
-    public void DisabledModeIsExplicitlyAvailableForLocalUse(string environmentName)
+    public void DisabledModeIsExplicitlyAvailableForLocalComposeAndTests(string environmentName)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>

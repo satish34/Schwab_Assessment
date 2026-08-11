@@ -167,6 +167,12 @@
         font-size: 0.8rem;
       }
 
+      .request-details {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+
       button {
         border: 0;
         border-radius: 999px;
@@ -265,7 +271,10 @@
         </div>
 
         <div class="panel-footer">
-          <span id="provider">Waiting for service metadata</span>
+          <div class="request-details">
+            <span id="serving-region">Region: waiting</span>
+            <span id="trace-id">Trace ID: waiting</span>
+          </div>
           <button id="refresh" type="button">Refresh rates</button>
         </div>
       </section>
@@ -285,7 +294,8 @@
         for (const currency of currencies) {
           document.getElementById(`rate-${currency}`).textContent = "--";
         }
-        document.getElementById("provider").textContent = "Waiting for service metadata";
+        document.getElementById("serving-region").textContent = "Region: waiting";
+        document.getElementById("trace-id").textContent = "Trace ID: waiting";
       }
 
       async function loadRates(advanceSample = false) {
@@ -321,14 +331,20 @@
           }
 
           const source = payload.providedBy;
-          document.getElementById("provider").textContent =
-            `${source.service} | ${source.region} | ${source.cluster} | ${source.version}`;
+          const traceId = response.headers.get("x-trace-id");
+          if (!source || typeof source.region !== "string" ||
+              !/^[0-9a-f]{32}$/.test(traceId)) {
+            throw new Error("Service returned invalid request metadata");
+          }
+          document.getElementById("serving-region").textContent = `Region: ${source.region}`;
+          document.getElementById("trace-id").textContent = `Trace ID: ${traceId}`;
           status.textContent = "Rates loaded";
           status.dataset.state = "ready";
         } catch (error) {
           status.textContent = "Rates are temporarily unavailable";
           status.dataset.state = "error";
-          document.getElementById("provider").textContent = "Please try again shortly";
+          document.getElementById("serving-region").textContent = "Region: unavailable";
+          document.getElementById("trace-id").textContent = "Trace ID: unavailable";
         } finally {
           refresh.disabled = false;
         }
