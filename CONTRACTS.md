@@ -16,6 +16,10 @@ same change.
   `/health/cell` state. Kubernetes readiness never depends on App B.
 - Observability: Cloud Logging to partitioned BigQuery for application panels;
   Cloud Monitoring for restart and utilization panels.
+- Optional edge security: Cloud Armor rate limiting and preview-only OWASP
+  SQLi/XSS rules are created only when `ENABLE_CLOUD_ARMOR=1`; live value `0`.
+- Optional supply chain: Binary Authorization enforcement is created only when
+  `ENABLE_BINARY_AUTHORIZATION=1`; live value `0`.
 
 ## Resource names
 
@@ -39,8 +43,10 @@ release.
 | Backend service | `risk-app-a-gateway-backend` |
 | Global address | `risk-global-ip` |
 | Cluster node service accounts | `risk-gke-usc1-nodes`, `risk-gke-use4-nodes` |
+| App A caller service account | `currency-app-a-caller` |
 | Optional TLS objects | `risk-dns-auth`, `risk-cert`, `risk-cert-map` |
 | Health firewall | `risk-allow-gfe-to-app-a` |
+| Cloud Armor policy | `currency-edge-waf` |
 
 ## Network ranges
 
@@ -83,8 +89,11 @@ SERVICE_REGION
 SERVICE_CLUSTER
 SERVICE_VERSION
 APP_B_BASE_URL=http://app-b-engine.risk-system.svc.cluster.local:8080
+APP_B_AUTH_MODE=google-id-token
+APP_B_TOKEN_AUDIENCE=https://app-b-engine.schwab-assessment.internal
+APP_A_IDENTITY_EMAIL=currency-app-a-caller@PROJECT_ID.iam.gserviceaccount.com  # App B only
 FAULT_CONFIG_PATH=/etc/app-b-faults/faults.json  # App B only
-GOOGLE_CLOUD_PROJECT                            # only with Google telemetry
+GOOGLE_CLOUD_PROJECT=PROJECT_ID                 # deployed apps
 ```
 
 Docker Compose may override only the host portion of `APP_B_BASE_URL`; port
@@ -155,6 +164,33 @@ The ten rate snapshots and disclaimer are deterministic; random or external
 market values are forbidden. App B returns the complete immutable catalog on
 every request, so multiple Pods do not need shared state.
 
+The deployed internal request also requires:
+
+```http
+Authorization: Bearer GOOGLE_SIGNED_ID_TOKEN
+```
+
+The `app-a-gateway` Kubernetes service account is linked through Workload
+Identity Federation to the dedicated `currency-app-a-caller` IAM service account.
+App A requests a one-hour Google-signed ID token from the GKE metadata server
+for the exact audience `https://app-b-engine.schwab-assessment.internal`,
+caches it, and refreshes it before expiry. App B verifies Google's signature,
+issuer, audience, lifetime, verified email claim, and exact App A IAM service
+account email before serving the request. A missing, duplicate, malformed,
+expired, wrong-audience, or wrong-caller token returns internal HTTP `401`.
+App A treats token acquisition failure or an internal `401` as unavailable
+App B and preserves the public `503` contract.
+
+Tokens and authorization headers are never logged. Health endpoints remain
+unauthenticated. Docker Compose must set `APP_B_AUTH_MODE=disabled` explicitly
+because the local machine has no GKE metadata identity; deployed manifests and
+verification require `google-id-token` and fail closed.
+
+The internal hop remains HTTP. The signed token authenticates App A but does
+not encrypt traffic or prevent replay of a captured token before expiry;
+ClusterIP isolation and ingress NetworkPolicy reduce exposure. Production
+would add mTLS for confidentiality and stronger replay resistance.
+
 ## Browser UI
 
 `GET /` serves a small responsive rate board. It automatically fetches
@@ -164,6 +200,12 @@ click performs another GET and advances the local display through all ten
 snapshots. It sends no selection input; App B remains stateless and every click
 still exercises the full dependency path. The page must display the
 synthetic-data disclaimer.
+
+App A sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and a
+hash-based Content Security Policy without `unsafe-inline` on every response.
+Trusted HTTPS responses also set
+`Strict-Transport-Security: max-age=31536000; includeSubDomains`; local HTTP
+must not set HSTS.
 
 ## Health APIs
 
@@ -265,6 +307,8 @@ Rules:
 - A complete `schema_seed` event is emitted at startup.
 - Never log payment data, PII, tokens, headers, credentials, or exception text
   to public callers.
+- App B authentication rejection uses status `401`, decision `AUTH_REJECTED`,
+  and a non-secret error type; the token and header value are never logged.
 
 ## Workload contract
 
@@ -301,12 +345,47 @@ health timeout        = 2 seconds
 unhealthy threshold   = 2
 healthy threshold     = 3
 health logging        = enabled
+backend request logs  = sample rate 1.0 only when ENABLE_CLOUD_ARMOR=1
 ```
 
 The `protocol = HTTP` value is the private load-balancer-to-Pod backend
-protocol. It does not expose a public HTTP listener. A no-domain bootstrap may
+protocol. It does not configure a public HTTP frontend. A no-domain bootstrap may
 temporarily use port 80, but enabling the trusted domain removes that forwarding
 rule and its target HTTP proxy rather than redirecting it.
+
+When `ENABLE_CLOUD_ARMOR=1`, Cloud Armor uses these frozen rules. The default
+and current live value is `0`, so no policy is attached and no denial is
+claimed.
+
+```text
+priority 1000 = OWASP CRS 4.22 SQLi, deny(403), preview=true, sensitivity=1
+priority 1010 = OWASP CRS 4.22 XSS,  deny(403), preview=true, sensitivity=1
+priority 2000 = per-IP rate_based_ban, allow 120/60s, deny excess with 429
+ban threshold = 600/60s; ban duration = 60s
+default        = allow
+```
+
+The higher rate threshold leaves headroom for the one-request-per-second
+failover gate. The evidence exercise sends a bounded burst above 120 but below
+600, proving a logged `429` without intentionally banning the operator.
+
+## Binary Authorization contract
+
+When `ENABLE_BINARY_AUTHORIZATION=1`, both Autopilot clusters use
+`PROJECT_SINGLETON_POLICY_ENFORCE`. The project policy enables Google's
+maintained system-image policy, exempts only the exact Artifact Registry image
+paths `risk/app-a` and `risk/app-b`, and enforces `ALWAYS_DENY` for everything
+else. One guarded live Pod create request for `docker.io/library/nginx:1.27.5`
+must be denied and must not persist a Pod. The default and current live value
+is `0`, so cluster enforcement and the denial exercise are disabled.
+
+This is repository allowlisting, not signed build attestation: anyone who can
+push to those two protected repository paths could deploy an image. Artifact
+Registry writer access therefore remains limited to the build service account.
+GKE evaluates this policy on future Pod create/update requests; it does not
+evict existing Pods and is documented to fail open during service or quota
+failure. `ALWAYS_DENY` describes normal policy evaluation, not an availability
+hard-fail guarantee.
 
 ## Terraform state and dependency boundaries
 
@@ -338,11 +417,15 @@ rule and its target HTTP proxy rather than redirecting it.
 07-bigquery-latency-percentiles.csv
 07-bigquery-trace-join.csv
 07-bigquery-regional-traffic.csv
+07-bigquery-auth-rejections.csv
 08-grafana.png
 09-failover.csv
 09-failover.png
 10-backend-health-after.txt
-11-error-reporting.png          # optional P1
+11-error-reporting.png
 12-plan-check.txt
-13-teardown.txt
+13-teardown.txt                 # post-teardown; intentionally absent while live
+14-service-auth.txt
+15-cloud-armor.txt
+16-binary-authorization.txt
 ```

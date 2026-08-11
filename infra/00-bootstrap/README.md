@@ -4,6 +4,11 @@ This stack enables the assessment APIs and creates the project-scoped $30
 monthly safety budget. The project and billing link must already exist. It
 creates no workload infrastructure.
 
+The hardening release enables IAM Credentials. Binary Authorization and
+Container Analysis metadata APIs are enabled only when
+`ENABLE_BINARY_AUTHORIZATION=1`; the live/default value is `0`. API enablement
+alone would not enable paid image scanning or cluster enforcement.
+
 From the repository root:
 
 ```bash

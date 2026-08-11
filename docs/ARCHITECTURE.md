@@ -30,18 +30,22 @@ three small HPAs per region.
 
 ```mermaid
 flowchart TB
-  Client["Browser or API client"] --> ALB["Global external ALB<br/>136.69.29.22"]
+  Client["Browser or API client"] --> ALB["HTTPS satish.store:443<br/>Global external ALB"]
+  Armor["Cloud Armor<br/>optional; disabled live"] -.->|attaches when enabled| ALB
+  Identity["GKE Workload Identity<br/>currency-app-a-caller"]
 
   subgraph USC1["us-central1 - gke-risk-usc1"]
-    A1["App A - Java<br/>currency UI and API"] --> B1["App B - .NET<br/>private rate provider"]
+    A1["App A - Java<br/>currency UI and API"] -->|Google-signed ID token| B1["App B - .NET<br/>private rate provider"]
   end
 
   subgraph USE4["us-east4 - gke-risk-use4"]
-    A2["App A - Java<br/>currency UI and API"] --> B2["App B - .NET<br/>private rate provider"]
+    A2["App A - Java<br/>currency UI and API"] -->|Google-signed ID token| B2["App B - .NET<br/>private rate provider"]
   end
 
   ALB --> A1
   ALB --> A2
+  Identity -.->|mints audience-bound token| A1
+  Identity -.->|mints audience-bound token| A2
   A1 --> Logs["Cloud Logging"]
   B1 --> Logs
   A2 --> Logs
@@ -51,6 +55,11 @@ flowchart TB
   BQ --> Grafana["Grafana application panels"]
   Monitoring["Cloud Monitoring"] --> Grafana
 ```
+
+The remaining `risk-*` names are frozen infrastructure identifiers created
+before the application became a currency demo. The public content and APIs use
+currency language; replacing healthy clusters, registry paths, and data names
+only for cosmetic renaming would add migration risk and cost.
 
 ```text
 client
@@ -77,11 +86,12 @@ after three failed probes. The load balancer drains that cell. Recovery waits
 for five successful probes before the cell becomes eligible again; this slower
 path limits flapping.
 
-The measured test faulted `us-central1`. The cache marked the cell unhealthy in
-47.961 seconds and the edge drained it in 62.935 seconds. `us-east4` produced
-six confirmed successes after drain. Cache and edge recovery took 59.471 and
-73.792 seconds respectively, and all six backends returned healthy. Sixteen of
-167 requests failed during drain; the design does not claim zero downtime.
+The measured test faulted `us-central1`. Cached health drained in 45.388
+seconds, load-balancer health drained in 61.134 seconds, and public traffic
+converged on `us-east4` in 67.804 seconds. Cache and load-balancer recovery took
+49.413 and 73.459 seconds, and all six backends returned healthy. Fifteen of 162
+requests failed during transition; none failed before the fault or after
+public convergence. The design does not claim zero downtime.
 
 ## Isolation and ownership
 
@@ -91,6 +101,20 @@ only from App A Pods in `risk-system`. Both containers run non-root with a
 read-only root filesystem, dropped capabilities, no privilege escalation, and
 RuntimeDefault seccomp.
 
+The live release binds only the `app-a-gateway` Kubernetes service account to
+the dedicated `currency-app-a-caller` IAM service account. App A requests an
+audience-bound, Google-signed ID token from the GKE metadata server and sends
+it to App B. App B validates the signature, issuer, audience, expiry, verified
+email, and exact caller identity. App B receives no Google identity or project
+role. A direct unauthenticated request returns `401`; authenticated calls pass
+in both cells.
+
+Cloud Armor and Binary Authorization are implemented as opt-in Terraform
+controls. Both flags are `0` in the live environment: no Cloud Armor policy is
+attached, and neither cluster enforces Binary Authorization. This avoids their
+feature charges while keeping the reviewed implementation available for a
+separately approved rollout.
+
 Default-deny egress is deliberately not enabled. Adding it without tested DNS,
 metadata, identity, registry, and telemetry allowances creates a larger outage
 risk than it removes in this short assessment. A production rollout should add
@@ -99,12 +123,14 @@ and verify those paths before enforcing egress denial.
 Ownership is split by dependency boundary:
 
 - `00-bootstrap`: APIs and the $30 budget.
-- `10-global`: VPC, ranges, registry, global IP, log sink, BigQuery, and IAM.
-- `20-cluster`: two regional Autopilot clusters.
+- `10-global`: VPC, ranges, registry, global IP, log sink, BigQuery, IAM, and
+  the optional Binary Authorization policy.
+- `20-cluster`: two regional Autopilot clusters and the optional admission
+  enforcement mode.
 - Kubernetes/Kustomize: workloads, Services, health, scaling, policies, and
   fault profiles; GKE owns NEG lifecycle.
-- `30-lb`: health check, backend service, six NEG attachments, proxies, URL
-  maps, and forwarding rules.
+- `30-lb`: health check, backend service, optional Cloud Armor attachment, six
+  NEG attachments, proxies, URL maps, and forwarding rules.
 
 The stacks currently use ignored local Terraform state. That was acceptable
 for a single-machine assessment, but it is not a team-safe production backend.
@@ -120,9 +146,8 @@ The surviving region was sized for the bounded assessment load. HPA is not
 instant failover capacity; production capacity must be pre-provisioned and
 tested against peak regional traffic.
 
-The current public origin remains HTTP only until the approved currency image
-is deployed. The owned root domain `satish.store`, Cloud DNS authorization, and
-Google-managed certificate are ready; Terraform then adds port 443 and removes
-the old port 80 frontend without putting a private key in state. Internal
+The public origin is HTTPS-only at `satish.store`. Cloud DNS and Certificate
+Manager automate validation and renewal without putting a private key in
+Terraform state. There is no public port 80 rule or redirect. Internal
 load-balancer health checks and App A-to-App B calls remain HTTP inside the
 private service path.

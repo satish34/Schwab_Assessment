@@ -17,6 +17,12 @@ is claimed here.
 The environment remains live for review and is still billable. Teardown has
 not been authorized or executed. The project itself is retained by design.
 
+Cloud Armor and Binary Authorization are implemented behind Terraform feature
+flags, but both flags are `0` in the live environment. No Cloud Armor policy is
+attached and neither cluster enforces Binary Authorization, so no feature
+charge is active. Current pricing must be reviewed before either control is
+enabled; that opt-in also requires a fresh plan and explicit cost approval.
+
 Terraform state is local and gitignored. This kept bootstrap simple for a
 single-machine assessment, but loss of this working directory would complicate
 safe teardown. A production team should use a restricted, versioned remote
@@ -25,9 +31,12 @@ backend and a managed CI identity.
 ## Security status
 
 Implemented controls include private GKE nodes, an administrator-only control
-plane `/32`, Workload Identity, scoped service accounts, a private App B
-ClusterIP, ingress NetworkPolicy, hardened Pod/container security contexts,
-immutable full-SHA tags, and no user-managed service-account keys.
+plane `/32`, GKE Workload Identity Federation, Google-signed App A service
+tokens, scoped service accounts, a private App B ClusterIP, ingress
+NetworkPolicy, hardened Pod/container security contexts, immutable full-SHA
+tags, and no user-managed service-account keys. App B returns `401` for a
+missing token and validates the signature and caller claims for authenticated
+requests.
 
 The image gate blocks every fixable HIGH or CRITICAL vulnerability. App A had
 no HIGH or CRITICAL findings. App B's Microsoft Debian runtime base still
@@ -42,10 +51,10 @@ the scan before promotion.
 | Gap | Why it is out of this assessment | Production direction |
 |---|---|---|
 | DNSSEC on the new delegation | It was disabled for the registrar nameserver switch; publishing unmatched keys would break resolution | Enable Cloud DNS DNSSEC, then publish its exact DS record at Squarespace and verify before enforcing it |
-| Cloud Armor/WAF | Deferred until the core endpoint and failover path were proven | Add a previewed rate limit and selected managed rules with false-positive tests |
+| Live WAF and rate limiting | The Cloud Armor implementation is disabled to avoid a feature charge for the short review window | Recheck pricing, enable with approval, review preview matches, then enforce only tuned rules |
 | Default-deny egress | Untested DNS, metadata, identity, and telemetry exceptions can break Autopilot workloads | Inventory destinations, allow only verified paths, then enforce and retest |
 | Service mesh and mTLS | App A-to-App B stays inside one cell and the feature was optional | Add only with an identity, certificate rotation, and operational ownership model |
-| Binary Authorization/signing | Extra policy plumbing was not part of the core demonstration | Sign provenance and enforce trusted builders before production promotion |
+| Binary Authorization enforcement and signed attestations | The opt-in allowlist is disabled live and, even when enabled, does not prove who built an allowed image | Enable only after an in-place plan and cost approval; then add attestations tied to the trusted build identity |
 | Shared VPC and enterprise role separation | The Gmail account has no GCP Organization/folder hierarchy | Move networking and CI/deploy duties into separate projects and identities |
 | Remote Terraform state | Local ignored state met the single-operator deadline | Use a versioned remote backend with scoped CI access and recovery testing |
 | NAT, proxy-only subnet, and private service access | No arbitrary internet egress, proxy-only load balancer, or managed private service needs them | Add only for a verified dependency and include its cost/failure path |

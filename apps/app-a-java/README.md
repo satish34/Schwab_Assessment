@@ -20,7 +20,19 @@ The 500 ms connect timeout, 750 ms response timeout, one bounded retry, circuit
 breaker, and 3-failure/5-success health hysteresis are unchanged.
 
 Runtime values are `SERVICE_REGION`, `SERVICE_CLUSTER`, `SERVICE_VERSION`, and
-`APP_B_BASE_URL`. The service listens on port `8080`.
+`APP_B_BASE_URL`. Deployed Pods also use `APP_B_AUTH_MODE=google-id-token` and
+`APP_B_TOKEN_AUDIENCE=https://app-b-engine.schwab-assessment.internal`. App A
+gets a short-lived Google-signed ID token from the GKE metadata server, caches
+it, and sends it as a bearer token on every App B request. Local Compose sets
+the authentication mode to `disabled` explicitly with the `local` Spring
+profile; startup rejects disabled mode under any other profile. Metadata calls
+have a separate three-second timeout and one bounded retry. The service listens
+on port `8080`.
+
+Every response sets `nosniff`, frame denial, and a hash-based CSP with no
+`unsafe-inline`. HSTS is emitted only when the servlet request is secure or the
+trusted forwarding headers identify the original request as HTTPS, so local
+HTTP development remains usable.
 
 From the repository root, run the pinned Maven verification:
 

@@ -15,8 +15,18 @@ docker build --tag app-b-engine:local apps/app-b-dotnet
 ```
 
 Runtime identity comes from `SERVICE_REGION`, `SERVICE_CLUSTER`, and
-`SERVICE_VERSION`. `GOOGLE_CLOUD_PROJECT` is used only to format trace resource
-names. Fault settings are reloaded from `FAULT_CONFIG_PATH`; the default path
-is `/etc/app-b-faults/faults.json`.
+`SERVICE_VERSION`. In Google token mode, `GOOGLE_CLOUD_PROJECT` is required for
+trace names and to require `APP_A_IDENTITY_EMAIL` to be exactly
+`currency-app-a-caller@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com`. Fault
+settings are reloaded from `FAULT_CONFIG_PATH`; the default path is
+`/etc/app-b-faults/faults.json`.
+
+The deployed internal endpoint requires a Google-signed bearer ID token with
+audience `https://app-b-engine.schwab-assessment.internal` and the exact
+`currency-app-a-caller` service-account email. Signature, issuer, audience,
+lifetime, email, and `email_verified` are checked before the request runs;
+health endpoints remain open for Kubernetes. Local Compose explicitly uses
+`APP_B_AUTH_MODE=disabled` in the Development environment. Production cannot
+start with authentication disabled.
 
 Rates are synthetic and are not for financial use.
