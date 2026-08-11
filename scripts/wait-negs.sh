@@ -18,7 +18,7 @@ neg_timeout_seconds="${NEG_TIMEOUT_SECONDS:-900}"
 neg_poll_seconds="${NEG_POLL_SECONDS:-10}"
 
 neg_specs=(
-  'us-central1-a|app-a-neg-usc1|risk-usc1|usc1|gke-risk-usc1|a'
+  'us-central1-f|app-a-neg-usc1|risk-usc1|usc1|gke-risk-usc1|a'
   'us-central1-b|app-a-neg-usc1|risk-usc1|usc1|gke-risk-usc1|b'
   'us-central1-c|app-a-neg-usc1|risk-usc1|usc1|gke-risk-usc1|c'
   'us-east4-a|app-a-neg-use4|risk-use4|use4|gke-risk-use4|a'
@@ -376,9 +376,9 @@ inventory_is_exact() {
         }
     ] | sort_by(.zone, .name)
       == ([
-        {"name":"app-a-neg-usc1","zone":"us-central1-a","type":"GCE_VM_IP_PORT"},
         {"name":"app-a-neg-usc1","zone":"us-central1-b","type":"GCE_VM_IP_PORT"},
         {"name":"app-a-neg-usc1","zone":"us-central1-c","type":"GCE_VM_IP_PORT"},
+        {"name":"app-a-neg-usc1","zone":"us-central1-f","type":"GCE_VM_IP_PORT"},
         {"name":"app-a-neg-use4","zone":"us-east4-a","type":"GCE_VM_IP_PORT"},
         {"name":"app-a-neg-use4","zone":"us-east4-b","type":"GCE_VM_IP_PORT"},
         {"name":"app-a-neg-use4","zone":"us-east4-c","type":"GCE_VM_IP_PORT"}
@@ -544,7 +544,7 @@ while ((SECONDS < deadline)); do
   actual_endpoint_sets=()
 
   if verify_deployed_versions \
-      gke-risk-usc1 us-central1-a us-central1-b us-central1-c \
+      gke-risk-usc1 us-central1-f us-central1-b us-central1-c \
     && verify_deployed_versions \
       gke-risk-use4 us-east4-a us-east4-b us-east4-c; then
     workloads_ready=1
@@ -552,7 +552,7 @@ while ((SECONDS < deadline)); do
 
   if service_neg_ready \
       gke-risk-usc1 app-a-neg-usc1 \
-      'us-central1-a,us-central1-b,us-central1-c' \
+      'us-central1-b,us-central1-c,us-central1-f' \
     && service_neg_ready \
       gke-risk-use4 app-a-neg-use4 \
       'us-east4-a,us-east4-b,us-east4-c'; then

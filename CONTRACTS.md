@@ -74,7 +74,7 @@ GFE/health-check source ranges:
 
 | Region | Zones | Custom NEG name |
 |---|---|---|
-| `us-central1` | `us-central1-a`, `us-central1-b`, `us-central1-c` | `app-a-neg-usc1` |
+| `us-central1` | `us-central1-b`, `us-central1-c`, `us-central1-f` | `app-a-neg-usc1` |
 | `us-east4` | `us-east4-a`, `us-east4-b`, `us-east4-c` | `app-a-neg-use4` |
 
 Each regional custom NEG name is reused across that region's three zones.

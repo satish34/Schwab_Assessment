@@ -14,7 +14,7 @@ patches:
       - op: add
         path: /spec/template/spec/nodeSelector
         value:
-          topology.kubernetes.io/zone: us-central1-a
+          topology.kubernetes.io/zone: us-central1-f
   - target:
       kind: Deployment
       name: app-a-gateway-b

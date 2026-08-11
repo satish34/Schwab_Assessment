@@ -254,7 +254,7 @@ verify_cluster() {
 verify_cluster \
   gke-risk-usc1 us-central1 risk-usc1 \
   risk-usc1-pods risk-usc1-services 172.16.0.0/28 "$node_usc1" \
-  us-central1-a us-central1-b us-central1-c
+  us-central1-b us-central1-c us-central1-f
 
 verify_cluster \
   gke-risk-use4 us-east4 risk-use4 \

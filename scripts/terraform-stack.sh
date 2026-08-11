@@ -17,7 +17,8 @@ terraform_timeout="${TERRAFORM_TIMEOUT:-50m}"
 
 enable_cloud_armor="${ENABLE_CLOUD_ARMOR:-0}"
 enable_binary_authorization="${ENABLE_BINARY_AUTHORIZATION:-0}"
-for feature_flag in enable_cloud_armor enable_binary_authorization; do
+allow_central_cluster_replacement="${ALLOW_CENTRAL_CLUSTER_REPLACEMENT:-0}"
+for feature_flag in enable_cloud_armor enable_binary_authorization allow_central_cluster_replacement; do
   feature_value="${!feature_flag}"
   [[ "$feature_value" == "0" || "$feature_value" == "1" ]] || {
     printf '%s must be 0 or 1.\n' "${feature_flag^^}" >&2
@@ -108,7 +109,7 @@ TF_VAR_enable_binary_authorization=false
 export TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration
 export TF_VAR_domain_name TF_VAR_admin_cidr
 export TF_VAR_enable_cloud_armor TF_VAR_enable_binary_authorization
-trap 'rm -f -- infra/20-cluster/.terraform/binary-authorization-apply-gate.tfplan; unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr TF_VAR_enable_cloud_armor TF_VAR_enable_binary_authorization' EXIT
+trap 'rm -f -- infra/20-cluster/.terraform/cluster-apply-gate.tfplan; unset GOOGLE_OAUTH_ACCESS_TOKEN TF_VAR_project_id TF_VAR_billing_account_id TF_VAR_gcloud_configuration TF_VAR_domain_name TF_VAR_admin_cidr TF_VAR_enable_cloud_armor TF_VAR_enable_binary_authorization' EXIT
 
 run_terraform() {
   timeout --foreground --signal=INT --kill-after=15s \
@@ -132,30 +133,155 @@ if [[ "${TF_AUTO_APPROVE:-0}" == "1" ]]; then
   approve_args=(-auto-approve)
 fi
 
-if [[ "$action" == "apply" \
-  && "$stack_dir" == "infra/20-cluster" \
-  && "$enable_binary_authorization" == "1" ]]; then
+if [[ "$action" == "apply" && "$stack_dir" == "infra/20-cluster" ]]; then
   [[ "${TF_AUTO_APPROVE:-0}" == "1" ]] || {
-    printf 'Binary Authorization apply requires TF_AUTO_APPROVE=1 after reviewing the in-place plan.\n' >&2
+    printf 'Cluster apply requires TF_AUTO_APPROVE=1 after reviewing the saved plan.\n' >&2
     exit 2
   }
-  gated_plan=".terraform/binary-authorization-apply-gate.tfplan"
+  if [[ "$allow_central_cluster_replacement" == "1" \
+    && "$enable_binary_authorization" != "0" ]]; then
+    printf 'Central cluster replacement requires Binary Authorization to remain disabled.\n' >&2
+    exit 2
+  fi
+  gated_plan=".terraform/cluster-apply-gate.tfplan"
   rm -f -- "$stack_dir/$gated_plan"
-  run_terraform -chdir="$stack_dir" plan -input=false -out="$gated_plan"
-  gated_plan_json="$(run_terraform -chdir="$stack_dir" show -json "$gated_plan")"
-  jq -e '
-    all(.resource_changes[]?;
-      ((.change.actions | index("delete")) == null)
-    ) and
-    all(.resource_changes[]? | select(.type == "google_container_cluster");
-      (.change.actions == ["update"]) or (.change.actions == ["no-op"])
+  cluster_plan_args=()
+  if [[ "$allow_central_cluster_replacement" == "1" ]]; then
+    cluster_plan_args=(
+      '-replace=module.autopilot_cluster["us-central1"].google_container_cluster.this'
     )
+  fi
+  run_terraform -chdir="$stack_dir" plan -input=false \
+    -out="$gated_plan" "${cluster_plan_args[@]}"
+  gated_plan_json="$(run_terraform -chdir="$stack_dir" show -json "$gated_plan")"
+  jq -e --arg central 'module.autopilot_cluster["us-central1"].google_container_cluster.this' \
+    --arg east 'module.autopilot_cluster["us-east4"].google_container_cluster.this' \
+    --arg allow_replacement "$allow_central_cluster_replacement" \
+    --arg project "$PROJECT_ID" \
+    --arg admin_cidr "$ADMIN_CIDR" \
+    --arg node_sa "risk-gke-usc1-nodes@$PROJECT_ID.iam.gserviceaccount.com" '
+    .resource_changes as $changes
+    | ($changes | map(select(.address == $central)) | first) as $central_change
+    | (($central_change.change.before.node_locations // []) | sort) as $central_before
+    | (($central_change.change.after.node_locations // []) | sort) as $central_after
+    | (
+        ($central_change.change.before != null)
+        and ($central_change.change.after != null)
+        and ($central_before != $central_after)
+      ) as $central_locations_change
+    | (.complete == true)
+      and (.errored == false)
+      and ([$changes[] | select(.address == $central)] | length == 1)
+      and ([$changes[] | select(.address == $east)] | length == 1)
+      and all($changes[]?;
+        (
+          (
+            .address == "terraform_data.global_contract"
+            and (
+              (.change.actions == ["create"])
+              or (.change.actions == ["no-op"])
+            )
+          )
+          or (
+            ((.address == $central) or (.address == $east))
+            and (
+              (
+                ($allow_replacement == "1")
+                and (.address == $central)
+                and (.change.actions == ["delete", "create"])
+              )
+              or (.change.actions == ["create"])
+              or (.change.actions == ["update"])
+              or (.change.actions == ["no-op"])
+            )
+          )
+        )
+      )
+      and (
+        if ($allow_replacement == "1") then
+          ($central_change.change.after) as $after
+          |
+          ([$changes[] | select(.change.actions != ["no-op"])] | length == 1)
+          and ($central_change.change.actions == ["delete", "create"])
+          and (
+            ($central_before == ["us-central1-a", "us-central1-b", "us-central1-c"])
+          )
+          and ($central_after == ["us-central1-b", "us-central1-c", "us-central1-f"])
+          and (($central_change.change.before.name // "") == "gke-risk-usc1")
+          and (($central_change.change.after.name // "") == "gke-risk-usc1")
+          and (($central_change.change.after.location // "") == "us-central1")
+          and (($central_change.change.after.enable_autopilot // false) == true)
+          and ($central_change.change.after.deletion_protection == false)
+          and ($after.project == $project)
+          and ($after.network | endswith("/projects/\($project)/global/networks/risk-vpc"))
+          and ($after.subnetwork | endswith("/projects/\($project)/regions/us-central1/subnetworks/risk-usc1"))
+          and ($after.networking_mode == "VPC_NATIVE")
+          and ($after.datapath_provider == "ADVANCED_DATAPATH")
+          and ($after.release_channel == [{"channel":"REGULAR"}])
+          and ($after.resource_labels == {
+            "managed_by":"terraform",
+            "region":"us-central1",
+            "workload":"risk-assessment"
+          })
+          and ($after.workload_identity_config == [{"workload_pool":"\($project).svc.id.goog"}])
+          and (
+            $after.ip_allocation_policy == [{
+              "additional_ip_ranges_config":[],
+              "additional_pod_ranges_config":[],
+              "cluster_secondary_range_name":"risk-usc1-pods",
+              "services_secondary_range_name":"risk-usc1-services",
+              "stack_type":"IPV4"
+            }]
+          )
+          and (($after.private_cluster_config | length) == 1)
+          and ($after.private_cluster_config[0].enable_private_nodes == true)
+          and (($after.private_cluster_config[0].enable_private_endpoint // false) == false)
+          and ($after.private_cluster_config[0].master_ipv4_cidr_block == "172.16.0.0/28")
+          and ($after.private_cluster_config[0].master_global_access_config == [{"enabled":false}])
+          and (
+            $after.master_authorized_networks_config == [{
+              "cidr_blocks":[{"cidr_block":$admin_cidr,"display_name":"assessment-admin"}],
+              "gcp_public_cidrs_access_enabled":false
+            }]
+          )
+          and ($after.cluster_autoscaling[0].auto_provisioning_defaults[0].service_account == $node_sa)
+          and (($after.logging_config[0].enable_components | sort) == ["SYSTEM_COMPONENTS","WORKLOADS"])
+          and ($after.monitoring_config == [{"enable_components":["SYSTEM_COMPONENTS"]}])
+          and (($after.binary_authorization // []) == [])
+          and (($changes | map(select(.address == $east)) | first).change.actions == ["no-op"])
+        else
+          all($changes[]?; ((.change.actions | index("delete")) == null))
+          and ($central_locations_change | not)
+        end
+      )
   ' <<<"$gated_plan_json" >/dev/null || {
-    printf 'Binary Authorization apply refused: the saved plan replaces or destroys a cluster/resource.\n' >&2
+    printf 'Cluster apply refused: the saved plan changes an unknown resource or violates the exact guarded cluster contract.\n' >&2
     exit 1
   }
-  printf 'Verified Binary Authorization changes contain no replacement or destroy action.\n'
-  run_terraform -chdir="$stack_dir" apply -input=false "$gated_plan"
+  changed_resource_count="$(
+    jq '[.resource_changes[]? | select(.change.actions != ["no-op"])] | length' \
+      <<<"$gated_plan_json"
+  )"
+  changed_output_count="$(
+    jq '[.output_changes[]? | select(.actions != ["no-op"])] | length' \
+      <<<"$gated_plan_json"
+  )"
+  if [[ "$changed_resource_count" == "0" && "$changed_output_count" == "0" ]]; then
+    printf 'Verified the cluster stack is already converged; there is no saved-plan change to apply.\n'
+  else
+    jq -e '.applyable == true' <<<"$gated_plan_json" >/dev/null || {
+      printf 'Cluster apply refused: Terraform did not produce an applyable saved plan.\n' >&2
+      exit 1
+    }
+    if [[ "$changed_resource_count" == "0" ]]; then
+      printf 'Verified the saved plan changes only Terraform output state; live resources are unchanged.\n'
+    elif [[ "$allow_central_cluster_replacement" == "1" ]]; then
+      printf 'Verified the saved plan replaces only the central cluster from a/b/c to b/c/f.\n'
+    else
+      printf 'Verified the saved cluster plan contains no replacement or destroy action.\n'
+    fi
+    run_terraform -chdir="$stack_dir" apply -input=false "$gated_plan"
+  fi
 else
   run_terraform -chdir="$stack_dir" "$action" -input=false "${approve_args[@]}"
 fi

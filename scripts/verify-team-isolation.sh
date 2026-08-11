@@ -234,14 +234,14 @@ for context in gke-risk-usc1 gke-risk-use4; do
   app_b_policies="$(kube "$operator_kubeconfig" "" --context="$context" --namespace=currency-app-b \
     --request-timeout=20s get networkpolicies -o json)"
   jq -e '
+    ([.items[] | select(.metadata.name == "default-deny-ingress")] | first) as $deny |
+    ([.items[] | select(.metadata.name == "allow-app-a-from-global-load-balancer")] | first) as $allow |
     ([.items[].metadata.name] | sort) ==
       ["allow-app-a-from-global-load-balancer", "default-deny-ingress"] and
-    ([.items[] | select(.metadata.name == "default-deny-ingress")] | first) as $deny |
     ($deny.spec.podSelector == {}) and
     ($deny.spec.policyTypes == ["Ingress"]) and
     (($deny.spec.ingress // []) == []) and
     (($deny.spec.egress // []) == []) and
-    ([.items[] | select(.metadata.name == "allow-app-a-from-global-load-balancer")] | first) as $allow |
     ($allow.spec.podSelector == {"matchLabels":{"app":"app-a-gateway"}}) and
     ($allow.spec.policyTypes == ["Ingress"]) and
     (($allow.spec.ingress | length) == 1) and
@@ -255,14 +255,14 @@ for context in gke-risk-usc1 gke-risk-use4; do
   ' \
     <<<"$app_a_policies" >/dev/null || fail "$context App A NetworkPolicy inventory changed"
   jq -e '
+    ([.items[] | select(.metadata.name == "default-deny-ingress")] | first) as $deny |
+    ([.items[] | select(.metadata.name == "allow-app-b-from-app-a")] | first) as $allow |
     ([.items[].metadata.name] | sort) ==
       ["allow-app-b-from-app-a", "default-deny-ingress"] and
-    ([.items[] | select(.metadata.name == "default-deny-ingress")] | first) as $deny |
     ($deny.spec.podSelector == {}) and
     ($deny.spec.policyTypes == ["Ingress"]) and
     (($deny.spec.ingress // []) == []) and
     (($deny.spec.egress // []) == []) and
-    ([.items[] | select(.metadata.name == "allow-app-b-from-app-a")] | first) as $allow |
     ($allow.spec.podSelector == {"matchLabels":{"app":"app-b-engine"}}) and
     ($allow.spec.policyTypes == ["Ingress"]) and
     (($allow.spec.ingress | length) == 1) and

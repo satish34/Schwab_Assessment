@@ -188,13 +188,13 @@ jq -e \
       end
     ) and
     ((.neg_backends.value | keys | sort) == [
-      "us-central1-a", "us-central1-b", "us-central1-c",
+      "us-central1-b", "us-central1-c", "us-central1-f",
       "us-east4-a", "us-east4-b", "us-east4-c"
     ]) and
     (.neg_backends.value as $negs |
-      ($negs["us-central1-a"].name == "app-a-neg-usc1") and
       ($negs["us-central1-b"].name == "app-a-neg-usc1") and
       ($negs["us-central1-c"].name == "app-a-neg-usc1") and
+      ($negs["us-central1-f"].name == "app-a-neg-usc1") and
       ($negs["us-east4-a"].name == "app-a-neg-use4") and
       ($negs["us-east4-b"].name == "app-a-neg-use4") and
       ($negs["us-east4-c"].name == "app-a-neg-use4") and
@@ -205,7 +205,7 @@ jq -e \
         )) and
         ($entry.value.endpoints >= 0)
       ) and
-      (["us-central1-a", "us-central1-b", "us-central1-c"]
+      (["us-central1-b", "us-central1-c", "us-central1-f"]
         | map($negs[.].endpoints) | add) >= 2 and
       (["us-east4-a", "us-east4-b", "us-east4-c"]
         | map($negs[.].endpoints) | add) >= 2
@@ -264,9 +264,9 @@ jq -e --arg project "$PROJECT_ID" --argjson cloud_armor_enabled "$cloud_armor_en
       "/projects/(?<project>[^/]+)/zones/(?<zone>[^/]+)/networkEndpointGroups/(?<name>[^/]+)$"
     ))
   ] | sort_by(.zone)) == ([
-    {"project":$project,"zone":"us-central1-a","name":"app-a-neg-usc1"},
     {"project":$project,"zone":"us-central1-b","name":"app-a-neg-usc1"},
     {"project":$project,"zone":"us-central1-c","name":"app-a-neg-usc1"},
+    {"project":$project,"zone":"us-central1-f","name":"app-a-neg-usc1"},
     {"project":$project,"zone":"us-east4-a","name":"app-a-neg-use4"},
     {"project":$project,"zone":"us-east4-b","name":"app-a-neg-use4"},
     {"project":$project,"zone":"us-east4-c","name":"app-a-neg-use4"}

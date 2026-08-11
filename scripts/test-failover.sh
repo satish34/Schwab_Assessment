@@ -256,7 +256,7 @@ validate_cell_resources() {
   IFS=$'\t' read -r region cluster < <(cell_identity "$context")
   case "$region" in
     us-central1)
-      zone_a=us-central1-a
+      zone_a=us-central1-f
       zone_b=us-central1-b
       zone_c=us-central1-c
       ;;
@@ -531,7 +531,7 @@ get_backend_summary() {
   backend_summary="$(summarize_backend_health_json <<<"$health")" || return 1
   jq -e '
     ([.[].zone] == [
-      "us-central1-a", "us-central1-b", "us-central1-c",
+      "us-central1-b", "us-central1-c", "us-central1-f",
       "us-east4-a", "us-east4-b", "us-east4-c"
     ]) and all(.[]; .total >= 1)
   ' <<<"$backend_summary" >/dev/null

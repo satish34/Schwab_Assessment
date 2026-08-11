@@ -1,14 +1,14 @@
 locals {
   negs = {
-    us-central1-a = {
-      name   = "app-a-neg-usc1"
-      region = "us-central1"
-    }
     us-central1-b = {
       name   = "app-a-neg-usc1"
       region = "us-central1"
     }
     us-central1-c = {
+      name   = "app-a-neg-usc1"
+      region = "us-central1"
+    }
+    us-central1-f = {
       name   = "app-a-neg-usc1"
       region = "us-central1"
     }

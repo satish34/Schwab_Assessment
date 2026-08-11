@@ -367,7 +367,7 @@ fi
 mutated_contexts+=("gke-risk-usc1|$work_dir/target-us-central1.yaml")
 mutated_contexts+=("gke-risk-use4|$work_dir/target-us-east4.yaml")
 deploy_region gke-risk-usc1 "$work_dir/target-us-central1.yaml" \
-  us-central1-a us-central1-b us-central1-c >"$work_dir/us-central1.log" 2>&1 &
+  us-central1-f us-central1-b us-central1-c >"$work_dir/us-central1.log" 2>&1 &
 central_pid=$!
 deploy_region gke-risk-use4 "$work_dir/target-us-east4.yaml" \
   us-east4-a us-east4-b us-east4-c >"$work_dir/us-east4.log" 2>&1 &

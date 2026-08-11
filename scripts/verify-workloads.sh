@@ -494,7 +494,7 @@ wait_for_workloads() {
 
   case "$context" in
     gke-risk-usc1)
-      zone_a=us-central1-a
+      zone_a=us-central1-f
       zone_b=us-central1-b
       zone_c=us-central1-c
       ;;

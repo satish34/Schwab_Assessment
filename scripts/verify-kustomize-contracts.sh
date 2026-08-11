@@ -56,6 +56,21 @@ require_regex_count() {
     || fail "$file expected $expected match(es) for: $pattern; found $actual"
 }
 
+require_overlay_zone() {
+  local file="$1"
+  local deployment="$2"
+  local zone="$3"
+
+  awk -v deployment="$deployment" -v zone="$zone" '
+    $0 == "      name: " deployment { target = 1; next }
+    target && /topology\.kubernetes\.io\/zone:/ {
+      if ($2 == zone) found++
+      target = 0
+    }
+    END { exit(found == 1 ? 0 : 1) }
+  ' "$file" || fail "$deployment must be pinned exactly once to $zone in $file"
+}
+
 render() {
   local source="$1"
   local output="$2"
@@ -73,6 +88,15 @@ mkdir -p "$runtime_dir"
 work_dir="$(mktemp -d "$runtime_dir/verify-kustomize.XXXXXX")"
 
 for region in us-central1 us-east4; do
+  case "$region" in
+    us-central1)
+      expected_zones=(us-central1-f us-central1-b us-central1-c)
+      ;;
+    us-east4)
+      expected_zones=(us-east4-a us-east4-b us-east4-c)
+      ;;
+    *) fail "unexpected region $region" ;;
+  esac
   platform="$work_dir/$region-platform.yaml"
   app_a="$work_dir/$region-app-a.yaml"
   app_b="$work_dir/$region-app-b.yaml"
@@ -82,6 +106,13 @@ for region in us-central1 us-east4; do
   render "k8s/overlays/$region/app-a" "$app_a"
   render "k8s/overlays/$region/app-b" "$app_b"
   render "k8s/overlays/$region" "$aggregate"
+
+  require_overlay_zone \
+    "k8s/overlays/$region/app-a/kustomization.yaml" app-a-gateway-a "${expected_zones[0]}"
+  require_overlay_zone \
+    "k8s/overlays/$region/app-a/kustomization.yaml" app-a-gateway-b "${expected_zones[1]}"
+  require_overlay_zone \
+    "k8s/overlays/$region/app-a/kustomization.yaml" app-a-gateway-c "${expected_zones[2]}"
 
   require_regex_count "$platform" 2 '^kind: Namespace$'
   require_regex_count "$platform" 3 '^kind: ConfigMap$'
@@ -121,6 +152,10 @@ for region in us-central1 us-east4; do
   require_fixed_count "$app_a" 3 'name: APP_B_TOKEN_AUDIENCE'
   require_fixed_count \
     "$app_a" 3 'value: https://app-b-engine.schwab-assessment.internal'
+  require_regex_count "$app_a" 3 '^        topology.kubernetes.io/zone: '
+  for zone in "${expected_zones[@]}"; do
+    require_fixed_count "$app_a" 1 "topology.kubernetes.io/zone: $zone"
+  done
   require_regex_count "$app_b" 1 '^kind: Deployment$'
   require_regex_count "$app_b" 1 '^kind: HorizontalPodAutoscaler$'
   require_regex_count "$app_b" 1 '^kind: PodDisruptionBudget$'

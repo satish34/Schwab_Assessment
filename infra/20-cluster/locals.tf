@@ -3,9 +3,9 @@ locals {
     us-central1 = {
       cluster_name = "gke-risk-usc1"
       node_locations = [
-        "us-central1-a",
         "us-central1-b",
         "us-central1-c",
+        "us-central1-f",
       ]
       subnet_name        = "risk-usc1"
       pod_range_name     = "risk-usc1-pods"

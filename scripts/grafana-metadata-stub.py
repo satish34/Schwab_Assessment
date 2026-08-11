@@ -55,7 +55,7 @@ def metadata_value(path: str, token: str, expiry_epoch: int) -> tuple[int, str, 
     if suffix == "project/numeric-project-id":
         return 200, "text/plain; charset=utf-8", PROJECT_NUMBER.encode()
     if suffix == "instance/zone":
-        value = f"projects/{PROJECT_NUMBER}/zones/us-central1-a"
+        value = f"projects/{PROJECT_NUMBER}/zones/us-central1-b"
         return 200, "text/plain; charset=utf-8", value.encode()
     if suffix == "instance/service-accounts":
         value = f"default/\n{SERVICE_ACCOUNT}/\n"
