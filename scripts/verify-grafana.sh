@@ -422,18 +422,18 @@ fi
 jq -e '
   .id == "grafana-bigquery-datasource" and
   .type == "datasource" and
-  .info.version == "3.2.0" and
+  .info.version == "3.3.1" and
   .signature == "valid" and
   .signatureType == "grafana" and
   .signatureOrg == "Grafana Labs"
 ' <<<"$plugin_metadata" >/dev/null || {
-  printf 'Grafana BigQuery plugin is not exact version 3.2.0 with a valid Grafana Labs signature.\n' >&2
+  printf 'Grafana BigQuery plugin is not exact version 3.3.1 with a valid Grafana Labs signature.\n' >&2
   jq -c '{id,type,version:.info.version,signature,signatureType,signatureOrg}' \
     <<<"$plugin_metadata" >&2
   exit 1
 }
 printf '%s\n' \
-  'Verified Grafana BigQuery plugin 3.2.0 and its valid Grafana Labs signature.'
+  'Verified Grafana BigQuery plugin 3.3.1 and its valid Grafana Labs signature.'
 
 for datasource_uid in currency-bigquery currency-cloud-monitoring; do
   if ! health_response="$(grafana_api GET "/api/datasources/uid/$datasource_uid/health")"; then

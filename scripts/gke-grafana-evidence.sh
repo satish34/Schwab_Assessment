@@ -81,11 +81,11 @@ render_static() {
   fixture_image="us-central1-docker.pkg.dev/$expected_project/risk/grafana-evidence@$fixture_digest"
   render_manifest "$fixture_image" "$fixture_sha" "$rendered"
 
-  grep -Fq 'grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63' \
+  grep -Fq 'grafana/grafana:13.1.3-slim@sha256:2ae4278f55179f275614c076ac69cacc65f3f4748edf3edc19aa2ac8204caeab' \
     "$dockerfile" || fail "Grafana build base must remain digest pinned"
-  grep -Fq 'GRAFANA_BIGQUERY_VERSION=3.2.0' "$dockerfile" \
+  grep -Fq 'GRAFANA_BIGQUERY_VERSION=3.3.1' "$dockerfile" \
     || fail "Grafana BigQuery build version changed"
-  grep -Fq 'GRAFANA_BIGQUERY_SHA256=6b1c2c457f4131608874553e14eab5c12f356f66114b2facea6d81bd323a74ea' \
+  grep -Fq 'GRAFANA_BIGQUERY_SHA256=375894f2139481c875d0bd2d3eb09c170e8df18b8c702cece1cf0341fd6414f3' \
     "$dockerfile" || fail "Grafana BigQuery archive checksum changed"
   grep -Fq 'sha256sum -c -' "$dockerfile" \
     || fail "Grafana plugin download must be checksum verified"
@@ -95,6 +95,30 @@ render_static() {
     || fail "Grafana Cloud Build output must use an immutable full-SHA tag"
   grep -Fq -- '--ignore-unfixed' "$build_config" \
     || fail "Grafana Cloud Build must retain the fixed-vulnerability gate"
+  grep -Fq -- '--ignorefile=/workspace/observability/grafana/trivyignore.yaml' "$build_config" \
+    || fail "Grafana Cloud Build must use the scoped exception file"
+  grep -Fq -- '--show-suppressed' "$build_config" \
+    || fail "Grafana Cloud Build must expose suppressed findings"
+  ignore_file="$repo_root/observability/grafana/trivyignore.yaml"
+  expected_ignore_sha="a121b620802ee680a60cb2fda4a47cd5855e8ef24b52e6c296295f51efd7028a"
+  [[ "$(sha256sum "$ignore_file" | awk '{print $1}')" == "$expected_ignore_sha" ]] \
+    || fail "Grafana vulnerability exception contract changed"
+  grep -Fq "$expected_ignore_sha  observability/grafana/trivyignore.yaml" "$build_config" \
+    || fail "Grafana Cloud Build must verify the exact exception file"
+  [[ "$(grep -c '^  - id:' "$ignore_file")" == "4" ]] \
+    || fail "Grafana vulnerability exception count changed"
+  [[ "$(grep -c '^    expired_at: 2026-08-20$' "$ignore_file")" == "4" ]] \
+    || fail "Grafana vulnerability exceptions must all expire on 2026-08-20"
+  for finding in CVE-2026-21728 CVE-2026-28377 GHSA-hrxh-6v49-42gf CVE-2026-39822; do
+    [[ "$(grep -Fc -- "- id: $finding" "$ignore_file")" == "1" ]] \
+      || fail "Grafana vulnerability exception set changed: $finding"
+  done
+  [[ "$(grep -c '^      - usr/share/grafana/bin/grafana$' "$ignore_file")" == "2" ]] \
+    || fail "Grafana binary exception paths changed"
+  [[ "$(grep -c '^      - usr/share/grafana/preinstalled-plugins/grafana-bigquery-datasource/gpx_bigquery_linux_amd64$' "$ignore_file")" == "2" ]] \
+    || fail "Grafana plugin exception paths changed"
+  ! grep -Eq '^      - .*[*?\[]' "$ignore_file" \
+    || fail "Grafana vulnerability exception paths must not contain wildcards"
 
   [[ "$(grep -c '^kind: Job$' "$rendered")" == "1" ]] \
     || fail "Grafana render must contain exactly one Job"
@@ -118,8 +142,14 @@ render_static() {
     || fail "Grafana runtime image must use the resolved Artifact Registry digest"
   grep -Fq "value: $fixture_sha" "$rendered" \
     || fail "Grafana runtime manifest must retain its source SHA"
-  ! grep -Eq 'GF_PLUGINS_PREINSTALL(_SYNC)?' "$rendered" \
+  ! grep -Eq 'name: GF_PLUGINS_PREINSTALL(_SYNC)?$' "$rendered" \
     || fail "Grafana must not download plugins at runtime"
+  grep -A1 -F 'name: GF_PLUGINS_PREINSTALL_DISABLED' "$rendered" \
+    | grep -Fq 'value: "true"' \
+    || fail "Grafana background plugin installation must remain disabled"
+  grep -A1 -F 'name: GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED' "$rendered" \
+    | grep -Fq 'value: "true"' \
+    || fail "Grafana runtime signature-key retrieval must remain disabled"
   grep -Fq 'readOnlyRootFilesystem: true' "$rendered" \
     || fail "Grafana root filesystem must remain read-only"
   grep -Fq 'runAsGroup: 472' "$rendered" \
@@ -253,8 +283,8 @@ verify_installed_plugin() {
   plugins="$(kube exec "$pod_name" -- \
     grafana cli --pluginsDir /usr/share/grafana/preinstalled-plugins plugins ls 2>&1)" \
     || fail "could not inspect the running Grafana plugin inventory"
-  grep -Eq 'grafana-bigquery-datasource[[:space:]@]+3\.2\.0' <<<"$plugins" \
-    || fail "running Grafana does not contain pinned BigQuery plugin 3.2.0"
+  grep -Eq 'grafana-bigquery-datasource[[:space:]@]+3\.3\.1' <<<"$plugins" \
+    || fail "running Grafana does not contain pinned BigQuery plugin 3.3.1"
 }
 
 stop_port_forward() {

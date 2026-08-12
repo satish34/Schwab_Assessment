@@ -19,9 +19,9 @@ expected_project="schwab-assessment-gke"
 expected_configuration="schwab-assessment"
 expected_account="satish.cse7@gmail.com"
 grafana_reader="grafana-reader@$expected_project.iam.gserviceaccount.com"
-grafana_image="grafana/grafana:13.1.0@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63"
+grafana_image="grafana/grafana:13.1.3-slim@sha256:2ae4278f55179f275614c076ac69cacc65f3f4748edf3edc19aa2ac8204caeab"
 metadata_image="python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df"
-bigquery_plugin="grafana-bigquery-datasource@3.2.0"
+bigquery_plugin="grafana-bigquery-datasource@3.3.1"
 grafana_container="schwab-grafana-evidence"
 metadata_container="schwab-grafana-metadata"
 egress_network="schwab-grafana-egress"
@@ -138,17 +138,17 @@ run_static() {
   [[ "$session_ttl_seconds" =~ ^[0-9]+$ ]] \
     && ((session_ttl_seconds >= 900 && session_ttl_seconds <= 3600)) \
     || fail "GRAFANA_EVIDENCE_TTL_SECONDS must be between 900 and 3600"
-  [[ "$grafana_image" == grafana/grafana:13.1.0@sha256:* ]] \
-    || fail "Grafana must stay pinned to 13.1.0 and an immutable digest"
+  [[ "$grafana_image" == grafana/grafana:13.1.3-slim@sha256:* ]] \
+    || fail "Grafana must stay pinned to 13.1.3 and an immutable digest"
   [[ "$metadata_image" == *@sha256:* && "$metadata_image" != *:latest* ]] \
     || fail "the metadata helper image must use an immutable non-latest reference"
-  [[ "$bigquery_plugin" == "grafana-bigquery-datasource@3.2.0" ]] \
-    || fail "the BigQuery plugin must stay pinned to 3.2.0"
+  [[ "$bigquery_plugin" == "grafana-bigquery-datasource@3.3.1" ]] \
+    || fail "the BigQuery plugin must stay pinned to 3.3.1"
   [[ "$metadata_subnet" == "169.254.169.0/24" \
     && "$metadata_ip" == "169.254.169.254" ]] \
     || fail "the metadata compatibility network must retain the documented metadata address"
   docker image inspect "$grafana_image" >/dev/null 2>&1 \
-    || fail "the pinned Grafana 13.1.0 image is not local; pull it explicitly before start"
+    || fail "the pinned Grafana 13.1.3 image is not local; pull it explicitly before start"
   docker image inspect "$metadata_image" >/dev/null 2>&1 \
     || fail "the pinned metadata helper image is not local; pull it explicitly before start"
   git check-ignore --quiet -- "$session_dir/fixture" \

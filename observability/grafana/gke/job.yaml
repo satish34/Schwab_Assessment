@@ -57,6 +57,10 @@ spec:
               value: "false"
             - name: GF_PLUGINS_CHECK_FOR_UPDATES
               value: "false"
+            - name: GF_PLUGINS_PREINSTALL_DISABLED
+              value: "true"
+            - name: GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED
+              value: "true"
             - name: RELEASE_SHA
               value: RELEASE_SHA_VALUE
           resources:

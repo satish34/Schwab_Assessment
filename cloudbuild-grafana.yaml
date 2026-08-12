@@ -7,6 +7,8 @@ steps:
       - |
         [[ '${_GIT_SHA}' =~ ^[0-9a-f]{40}$ ]]
         [[ '${_REPOSITORY}' == 'us-central1-docker.pkg.dev/${PROJECT_ID}/risk' ]]
+        echo 'a121b620802ee680a60cb2fda4a47cd5855e8ef24b52e6c296295f51efd7028a  observability/grafana/trivyignore.yaml' \
+          | sha256sum -c -
         printf 'Building immutable Grafana evidence image for commit %s.\n' '${_GIT_SHA}'
 
   - id: build-grafana
@@ -42,6 +44,8 @@ steps:
       - --scanners=vuln
       - --severity=HIGH,CRITICAL
       - --ignore-unfixed
+      - --ignorefile=/workspace/observability/grafana/trivyignore.yaml
+      - --show-suppressed
       - --exit-code=1
       - --no-progress
       - --skip-version-check

@@ -171,20 +171,42 @@ upload_files="$(
     meta list-files-for-upload . \
     | tr '\134' '/'
 )"
-for required_file in "$build_config" "$dockerfile"; do
+required_upload_files=("$build_config" "$dockerfile")
+if [[ "$image_name" == "grafana-evidence" ]]; then
+  required_upload_files+=("observability/grafana/trivyignore.yaml")
+fi
+for required_file in "${required_upload_files[@]}"; do
   grep -Fx -- "$required_file" <<<"$upload_files" >/dev/null || {
     printf 'Cloud Build source would omit required file %s.\n' "$required_file" >&2
     exit 1
   }
 done
 if [[ "$image_name" == "grafana-evidence" ]]; then
-  grep -Fq 'GRAFANA_BIGQUERY_SHA256=6b1c2c457f4131608874553e14eab5c12f356f66114b2facea6d81bd323a74ea' \
+  expected_ignore_sha="a121b620802ee680a60cb2fda4a47cd5855e8ef24b52e6c296295f51efd7028a"
+  actual_ignore_sha="$(sha256sum observability/grafana/trivyignore.yaml | awk '{print $1}')"
+  [[ "$actual_ignore_sha" == "$expected_ignore_sha" ]] || {
+    printf 'Grafana vulnerability exception contract changed.\n' >&2
+    exit 1
+  }
+  grep -Fq "$expected_ignore_sha  observability/grafana/trivyignore.yaml" "$build_config" || {
+    printf 'Grafana Cloud Build exception-file checksum gate is missing.\n' >&2
+    exit 1
+  }
+  grep -Fq 'GRAFANA_BIGQUERY_SHA256=375894f2139481c875d0bd2d3eb09c170e8df18b8c702cece1cf0341fd6414f3' \
     "$dockerfile" || {
     printf 'Grafana plugin checksum contract changed.\n' >&2
     exit 1
   }
   grep -Fq -- '--ignore-unfixed' "$build_config" || {
     printf 'Grafana Cloud Build fixed-vulnerability gate is missing.\n' >&2
+    exit 1
+  }
+  grep -Fq -- '--ignorefile=/workspace/observability/grafana/trivyignore.yaml' "$build_config" || {
+    printf 'Grafana Cloud Build scoped vulnerability exception file is missing.\n' >&2
+    exit 1
+  }
+  grep -Fq -- '--show-suppressed' "$build_config" || {
+    printf 'Grafana Cloud Build suppressed-finding audit output is missing.\n' >&2
     exit 1
   }
 fi

@@ -13,7 +13,7 @@ Cloud Monitoring queries include both `currency-app-a` and `currency-app-b`
 namespaces.
 
 The provisioning files are for self-hosted Grafana. Install
-`grafana-bigquery-datasource` 3.2.0, mount the dashboard at
+`grafana-bigquery-datasource` 3.3.1, mount the dashboard at
 `/var/lib/grafana/dashboards`, and run Grafana on GCP with the existing
 `grafana-reader` identity through an attached service account or GKE Workload
 Identity. The data sources use metadata-based authentication; do not create a
@@ -56,7 +56,7 @@ health endpoints, the imported dashboard, and every panel query:
 make verify-grafana
 ```
 
-The GKE evidence path bakes the checksum-pinned official BigQuery plugin 3.2.0
+The GKE evidence path bakes the checksum-pinned official BigQuery plugin 3.3.1
 archive into a scanned Artifact Registry image. Build it from a clean commit
 using an explicit full SHA:
 
@@ -64,6 +64,15 @@ using an explicit full SHA:
 RELEASE_SHA="$(git rev-parse HEAD)"
 make build-grafana GRAFANA_IMAGE_TAG="$RELEASE_SHA"
 ```
+
+The build still fails closed on every fixed `HIGH` or `CRITICAL` finding. Four
+findings in upstream compiled Grafana/plugin code have exact binary-path,
+reason, and 2026-08-20 expiry entries in `trivyignore.yaml`. The scan prints
+those suppressed findings; any fifth finding or expired exception blocks
+publication. The complete exception file is checksum-frozen in both the local
+submission gate and Cloud Build, so paths or ID mappings cannot be broadened
+silently. The exceptions cover unused Tempo/S3/xDS and a read-only plugin
+filesystem path, not a general severity waiver.
 
 The one-hour Job in `currency-observability` resolves that tag to one immutable
 digest before rendering the manifest. It performs no runtime plugin or Docker

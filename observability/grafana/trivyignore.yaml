@@ -1,0 +1,35 @@
+vulnerabilities:
+  - id: CVE-2026-21728
+    paths:
+      - usr/share/grafana/bin/grafana
+    statement: >-
+      Time-bounded upstream exception: Tempo is not configured or used, the
+      fixed dashboard cannot issue Tempo queries, and the Job has no public
+      Service or Ingress. Re-review when Grafana publishes a patched release.
+    expired_at: 2026-08-20
+  - id: CVE-2026-28377
+    paths:
+      - usr/share/grafana/bin/grafana
+    statement: >-
+      Time-bounded upstream exception: no Tempo or S3 datasource, credential,
+      or configuration exists in this one-hour evidence Job. Re-review when
+      Grafana publishes a patched release.
+    expired_at: 2026-08-20
+  - id: GHSA-hrxh-6v49-42gf
+    paths:
+      - usr/share/grafana/preinstalled-plugins/grafana-bigquery-datasource/gpx_bigquery_linux_amd64
+    statement: >-
+      Time-bounded upstream exception: the provisioned BigQuery datasource is
+      locked to Google APIs and has no xDS control plane; the Job is reachable
+      only through an operator-authenticated loopback tunnel. Re-review when
+      Grafana Labs publishes a patched signed plugin.
+    expired_at: 2026-08-20
+  - id: CVE-2026-39822
+    paths:
+      - usr/share/grafana/preinstalled-plugins/grafana-bigquery-datasource/gpx_bigquery_linux_amd64
+    statement: >-
+      Time-bounded upstream exception: runtime plugin installation and key
+      retrieval are disabled, the plugin and root filesystems are read-only,
+      and no user-controlled filesystem path enters the provisioned datasource.
+      Re-review when Grafana Labs publishes a patched signed plugin.
+    expired_at: 2026-08-20
