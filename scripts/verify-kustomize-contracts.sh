@@ -164,6 +164,7 @@ for region in us-central1 us-east4; do
   require_fixed_count "$app_a" 3 'name: OTEL_TRACES_SAMPLER_ARG'
   require_fixed_count "$app_a" 3 'value: "0.1"'
   require_fixed_count "$app_a" 3 'name: CLOUD_PROFILER_ENABLED'
+  require_fixed_count "$app_a" 3 'failureThreshold: 60'
   require_regex_count "$app_a" 3 '^        topology.kubernetes.io/zone: '
   for zone in "${expected_zones[@]}"; do
     require_fixed_count "$app_a" 1 "topology.kubernetes.io/zone: $zone"

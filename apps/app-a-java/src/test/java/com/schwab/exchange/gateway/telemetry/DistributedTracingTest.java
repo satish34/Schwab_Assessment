@@ -82,6 +82,12 @@ class DistributedTracingTest {
   }
 
   @Test
+  void generatedRootContextUsesValidW3cLevelTwoRandomTraceFlags() {
+    assertGeneratedRootFlag(Sampler.alwaysOff(), "02");
+    assertGeneratedRootFlag(Sampler.alwaysOn(), "03");
+  }
+
+  @Test
   void telemetryExporterFailureCannotEscapeIntoTheRequestPath() {
     SpanExporter failingExporter =
         new SpanExporter() {
@@ -171,6 +177,26 @@ class DistributedTracingTest {
         .setSampler(Sampler.alwaysOn())
         .addSpanProcessor(SimpleSpanProcessor.create(exporter))
         .build();
+  }
+
+  private static void assertGeneratedRootFlag(Sampler sampler, String expectedFlag) {
+    InMemorySpanExporter exporter = InMemorySpanExporter.create();
+    try (SdkTracerProvider provider =
+        SdkTracerProvider.builder()
+            .setSampler(sampler)
+            .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+            .build()) {
+      DistributedTracing tracing = DistributedTracing.forTesting(openTelemetry(provider));
+      TraceResolution resolution = new TraceContextResolver().resolve(null, null);
+
+      try (DistributedTracing.TraceSpan server =
+          tracing.startServerSpan(resolution, "GET", "/api/exchange-rates")) {
+        String traceparent = server.traceContext().traceparent();
+        assertThat(traceparent).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-" + expectedFlag);
+        assertThat(server.traceContext().traceId()).isEqualTo(traceparent.substring(3, 35));
+        server.complete(200, "");
+      }
+    }
   }
 
   private static OpenTelemetry openTelemetry(SdkTracerProvider provider) {

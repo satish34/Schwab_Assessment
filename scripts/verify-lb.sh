@@ -663,7 +663,11 @@ grep -Eiq '^strict-transport-security:[[:space:]]*max-age=31536000; includeSubDo
   || fail "the public API security headers do not match the hardened HTTPS contract"
 grep -Eiq '^x-correlation-id:[[:space:]]*[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}[[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate a valid public response correlation ID"
-grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[01][[:space:]]*$' <<<"$normalized_headers" \
+# W3C Trace Context Level 2 reserves bit 0 for sampled and bit 1 for a
+# randomly generated trace ID. OpenTelemetry-generated root spans therefore
+# legitimately emit 02 (unsampled/random) or 03 (sampled/random), while 00/01
+# remain valid for propagated Level 1 contexts.
+grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[0-3][[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate valid public response trace context"
 grep -Eiq '^x-trace-id:[[:space:]]*[0-9a-f]{32}[[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not expose a valid structured-log trace ID"

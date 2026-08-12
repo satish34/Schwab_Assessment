@@ -74,7 +74,10 @@ spec:
               path: /health/live
               port: http
             periodSeconds: 2
-            failureThreshold: 30
+            # Direct telemetry and Profiler initialization can extend a cold
+            # Autopilot start beyond 60 seconds. This affects startup only;
+            # the normal liveness probe remains strict after initialization.
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /health/live
