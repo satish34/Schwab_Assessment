@@ -10,7 +10,7 @@ steps:
         printf 'Building immutable App B image for commit %s.\n' '${_GIT_SHA}'
 
   - id: test-app-b
-    name: mcr.microsoft.com/dotnet/sdk@sha256:e2f26f26169fd10d6f1b426e01c97397717b32e9d5ab4ee4a7d5497ed9403007
+    name: mcr.microsoft.com/dotnet/sdk@sha256:306301580fcaa5b445180e759db59309979002d1000669cb4cf58a567d0014bc
     dir: apps/app-b-dotnet
     entrypoint: bash
     args:

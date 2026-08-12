@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0.423-bookworm-slim AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0.424-bookworm-slim@sha256:306301580fcaa5b445180e759db59309979002d1000669cb4cf58a567d0014bc AS build
 WORKDIR /src
 
 COPY src/AppB/AppB.csproj src/AppB/
@@ -11,7 +11,7 @@ RUN dotnet publish src/AppB/AppB.csproj \
     --output /app/publish \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0.29-bookworm-slim AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0.30-bookworm-slim@sha256:b0beb9cc1dee1c1b0749796110d4734292071b814207ad0d4f40611f7db04f7b AS runtime
 WORKDIR /app
 
 RUN groupadd --gid 10001 appgroup \
