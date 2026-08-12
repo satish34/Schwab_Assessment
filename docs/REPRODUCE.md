@@ -31,17 +31,21 @@ portable deployment path.
 Start with a separate, preferably empty, billing-enabled project and complete
 the reviewed cross-file port described above. The four Terraform roots create
 new local state for that deployment. `10-global` includes a declarative import
-that adopts `google_project.current`. If the quota preference already exists,
-import `google_cloud_quotas_quota_preference.gke_all_regions_cpu_capacity` into
-`00-bootstrap` before its first plan because the API/provider retains it. Any
-other populated project requires complete resource/state adoption and is not
-part of this clean-project workflow.
+that adopts `google_project.current`. Cloud Quotas retains its preferences. If
+any declared preference already exists, import it into `00-bootstrap` before
+the first plan, using the same authenticated Terraform variable context as the
+wrapper:
 
-For that exception, use the same authenticated Terraform variable context as
-the wrapper and import address
-`google_cloud_quotas_quota_preference.gke_all_regions_cpu_capacity` with ID
-`projects/PROJECT_ID/locations/global/quotaPreferences/compute-cpus-all-regions-96`
-before `make bootstrap-plan`.
+- `google_cloud_quotas_quota_preference.gke_all_regions_cpu_capacity` maps to
+  `projects/PROJECT_ID/locations/global/quotaPreferences/compute-cpus-all-regions-96`;
+- `google_cloud_quotas_quota_preference.gke_regional_ssd_capacity["us-central1"]`
+  maps to `projects/PROJECT_ID/locations/global/quotaPreferences/compute-ssd-total-gb-us-central1`;
+  and
+- `google_cloud_quotas_quota_preference.gke_regional_ssd_capacity["us-east4"]`
+  maps to `projects/PROJECT_ID/locations/global/quotaPreferences/compute-ssd-total-gb-us-east4`.
+
+A clean project needs no quota-preference import. Any other populated project
+requires complete resource/state adoption and is not part of this workflow.
 
 Billing/project creation remains outside Terraform. DNS registrar
 delegation and certificate propagation also remain manual. This runbook does

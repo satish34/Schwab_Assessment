@@ -1,9 +1,13 @@
 # 00-bootstrap
 
 This stack enables the assessment APIs, creates the project-scoped $30 monthly
-safety budget, and requests a 96-vCPU `CPUS_ALL_REGIONS` quota ceiling for the
-two three-zone Autopilot cells. The project and billing link must already
-exist. It creates no workload infrastructure.
+safety budget, and requests these Autopilot capacity ceilings:
+
+- 96 vCPUs across all regions; and
+- 900 GB of regional SSD in both `us-central1` and `us-east4`.
+
+The project and billing link must already exist. This stack creates no workload
+infrastructure.
 
 The hardening release enables IAM Credentials. Binary Authorization and
 Container Analysis metadata APIs are enabled only when
@@ -26,11 +30,15 @@ Copy `.env.example` to the ignored root `.env`, then set its real
 The budget uses Google's default email recipients: Billing Account
 Administrators and Billing Account Users.
 
-Google approval of a quota preference is external to Terraform. The post-apply
-gate requires both the preferred and granted values to be at least 96 before a
-release continues. A quota limit reserves no CPU and has no direct charge;
-actual allocated GKE/Compute resources remain billable. Hard zonal placement
-can still encounter provider capacity even when project quota is available.
+Google approval of quota preferences is external to Terraform. The post-apply
+gate requires the 96-vCPU preference and both 900-GB regional SSD preferences
+to be granted, reconciled, and visible as Compute limits before a release
+continues. Quota ceilings allocate nothing and have no direct charge; actual
+GKE/Compute resources remain billable. At the current minimum replica counts,
+the 900-GB value covers the observed east high-water mark of five 100-GB
+Autopilot nodes plus one surge slot for each of four Deployments reconciled in
+parallel. It preserves `maxUnavailable=0` but does not guarantee provider
+capacity or every HPA-maximized rollout.
 
 When `DOMAIN_NAME` is non-empty, this stack also enables Cloud DNS and
 Certificate Manager before `10-global` creates the optional HTTPS resources.
@@ -42,10 +50,7 @@ retained, non-billable project configuration. A shared remote backend is a
 production extension, not a gate blocker.
 
 For a new deployment, use a separate empty billing-enabled project and the
-reviewed cross-file contract port described in `docs/REPRODUCE.md`. If its quota
-preference already exists, import it as
-`google_cloud_quotas_quota_preference.gke_all_regions_cpu_capacity` before the
-first `00-bootstrap` plan, using ID
-`projects/PROJECT_ID/locations/global/quotaPreferences/compute-cpus-all-regions-96`
-and the same authenticated Terraform variable context as the wrapper;
-otherwise no quota-preference import is needed.
+reviewed cross-file contract port described in `docs/REPRODUCE.md`. Import any
+already-retained quota preference before the first `00-bootstrap` plan. The
+exact Terraform addresses and IDs are listed there; a clean project needs no
+quota-preference import.

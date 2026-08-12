@@ -164,7 +164,8 @@ for region in us-central1 us-east4; do
   require_fixed_count "$app_a" 3 'name: OTEL_TRACES_SAMPLER_ARG'
   require_fixed_count "$app_a" 3 'value: "0.1"'
   require_fixed_count "$app_a" 3 'name: CLOUD_PROFILER_ENABLED'
-  require_fixed_count "$app_a" 3 'failureThreshold: 60'
+  require_fixed_count "$app_a" 3 'periodSeconds: 2'
+  require_fixed_count "$app_a" 3 'failureThreshold: 90'
   require_regex_count "$app_a" 3 '^        topology.kubernetes.io/zone: '
   for zone in "${expected_zones[@]}"; do
     require_fixed_count "$app_a" 1 "topology.kubernetes.io/zone: $zone"
@@ -187,6 +188,8 @@ for region in us-central1 us-east4; do
     "$app_b" 1 'value: https://telemetry.googleapis.com/v1/traces'
   require_fixed_count "$app_b" 1 'name: OTEL_EXPORTER_OTLP_PROTOCOL'
   require_fixed_count "$app_b" 1 'value: http/protobuf'
+  require_fixed_count "$app_b" 1 'periodSeconds: 2'
+  require_fixed_count "$app_b" 1 'failureThreshold: 60'
 
   require_fixed_count \
     "$aggregate" 3 "image: us-central1-docker.pkg.dev/$project_id/risk/app-a:$fixture_sha"

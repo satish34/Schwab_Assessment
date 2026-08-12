@@ -443,7 +443,7 @@ else
     printf 'feature=Cloud Armor\n'
     printf 'implementation=Terraform feature flag ENABLE_CLOUD_ARMOR\n'
     printf 'live_state=disabled\n'
-    printf 'cost_state=no Cloud Armor policy or backend request logging enabled\n'
+    printf 'cost_state=no Cloud Armor policy; backend request logging enabled at a bounded 5%% sample for platform observability\n'
     printf 'verification=verify-lb confirmed no attached policy and no currency-edge-waf resource\n'
   } >"$work_dir/15-cloud-armor.txt"
 fi

@@ -30,8 +30,9 @@ immutable deployment and fresh evidence before they can be described as live.
 - Backends: six zonal App A NEGs, with all three endpoints healthy in each
   region
 - Capacity: `us-central1` uses zones `b/c/f`; `us-east4` uses `a/b/c`.
-  Terraform manages a 96-vCPU all-regions quota ceiling, which reserves no CPU
-  and has no direct charge.
+  Terraform manages a 96-vCPU all-regions ceiling and a 900-GB regional SSD
+  ceiling in each cell. These quotas allocate nothing and have no direct
+  charge; actual resources remain billable and provider capacity is separate.
 - Service authentication: App A obtains a Google-signed ID token through GKE
   Workload Identity Federation; App B validates it. A direct unauthenticated
   internal request returns `401`, while authenticated calls pass in both cells.

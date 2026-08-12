@@ -599,6 +599,50 @@ if [[ "$action" == "apply" && "$stack_dir" == "infra/00-bootstrap" ]]; then
   }
 
   printf 'Verified approved 96-vCPU all-regions quota preference; quota is a ceiling, not allocated capacity.\n'
+
+  for region in us-central1 us-east4; do
+    preference_name="compute-ssd-total-gb-${region}"
+    quota_preference_json="$(
+      gcloud beta quotas preferences describe "$preference_name" \
+        --configuration="$GCLOUD_CONFIGURATION" \
+        --account="$expected_account" --project="$PROJECT_ID" --format=json
+    )"
+    jq -e \
+      --arg project "$PROJECT_ID" \
+      --arg name "$preference_name" \
+      --arg region "$region" '
+      .name == ("projects/" + $project + "/locations/global/quotaPreferences/" + $name) and
+      .service == "compute.googleapis.com" and
+      .quotaId == "SSD-TOTAL-GB-per-project-region" and
+      .dimensions == {region: $region} and
+      (.quotaConfig.preferredValue | tonumber) == 900 and
+      (.quotaConfig.grantedValue | tonumber) >= 900 and
+      ((.reconciling // false) == false)
+    ' <<<"$quota_preference_json" >/dev/null || {
+      printf 'The %s regional SSD quota preference is not approved at the frozen 900-GB ceiling.\n' \
+        "$region" >&2
+      exit 1
+    }
+
+    regional_compute_quotas_json="$(
+      gcloud --configuration="$GCLOUD_CONFIGURATION" \
+        --account="$expected_account" --project="$PROJECT_ID" \
+        compute regions describe "$region" --format=json
+    )"
+    jq -e '
+      [.quotas[] | select(.metric == "SSD_TOTAL_GB")] as $matches |
+      ($matches | length) == 1 and ($matches[0].limit | tonumber) >= 900
+    ' <<<"$regional_compute_quotas_json" >/dev/null || {
+      printf 'Compute does not report a regional SSD limit of at least 900 GB in %s.\n' \
+        "$region" >&2
+      exit 1
+    }
+
+    printf 'Verified approved 900-GB regional SSD quota preference and Compute limit in %s.\n' \
+      "$region"
+  done
+
+  printf 'Regional SSD quota is a ceiling, not allocated storage; actual Autopilot disks remain billable.\n'
 fi
 
 if [[ "$action" == "apply" && "$stack_dir" == "infra/10-global" ]]; then

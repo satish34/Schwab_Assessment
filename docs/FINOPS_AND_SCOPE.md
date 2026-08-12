@@ -8,10 +8,13 @@ controls are a dedicated project, small Autopilot requests, bounded test
 traffic, narrow log export, partition-pruned BigQuery queries, and ordered
 teardown followed by an orphan check.
 
-Terraform manages an approved 96-vCPU project-wide `CPUS_ALL_REGIONS` quota
-preference. Raising quota has no direct fee and allocates nothing; it only
-permits Autopilot to obtain enough backing capacity for six zonal endpoints.
-Actual requested workload resources remain billable. Namespace ResourceQuotas
+Terraform manages a 96-vCPU project-wide `CPUS_ALL_REGIONS` ceiling and a
+900-GB `SSD_TOTAL_GB` ceiling in each deployment region. Quota changes have no
+direct fee and allocate nothing; actual Autopilot resources remain billable.
+The constrained east cell used five 100-GB node disks in steady state. Nine
+hundred GB provides one temporary 100-GB surge slot for each of the four
+Deployments reconciled in parallel during a zero-unavailable release at the
+current minimum replica counts. Namespace ResourceQuotas
 bound each app team, while the standing project Owner remains the broad
 exception. Google approval and zonal capacity are external dependencies.
 

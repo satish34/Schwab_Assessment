@@ -83,7 +83,10 @@ spec:
               path: /health/live
               port: http
             periodSeconds: 2
-            failureThreshold: 30
+            # Direct telemetry initialization has exceeded one minute during
+            # an Autopilot cold start. Bound startup at two minutes; liveness
+            # remains strict once this probe succeeds.
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /health/live

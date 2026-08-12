@@ -88,8 +88,10 @@ NEG data source.
 
 The project-wide `CPUS_ALL_REGIONS` quota preference is frozen at 96 vCPUs.
 Terraform manages preference ID `compute-cpus-all-regions-96`, and the
-post-bootstrap gate requires Google to have granted at least 96. This value is
-a ceiling, not reserved capacity or a spending target.
+regional `SSD_TOTAL_GB` preferences are frozen at 900 GB with IDs
+`compute-ssd-total-gb-us-central1` and `compute-ssd-total-gb-us-east4`. The
+post-bootstrap gate requires all three grants and matching Compute limits.
+These values are ceilings, not allocated capacity or spending targets.
 
 App A uses three zonal shard Deployments per region. Each shard is pinned to
 one frozen zone and has an HPA range of 1-2, for a regional total of 3-6. All
