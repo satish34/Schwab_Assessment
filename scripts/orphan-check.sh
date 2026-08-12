@@ -93,6 +93,21 @@ report_transient_names() {
     "$label" "$count" "$(paste -sd, <<<"$names")"
 }
 
+report_retained_names() {
+  local label="$1"
+  local names="$2"
+  local count
+
+  names="$(tr -d '\r' <<<"$names" | sed '/^[[:space:]]*$/d')"
+  if [[ -z "$names" ]]; then
+    printf '%s=0\n' "$label"
+    return
+  fi
+  count="$(wc -l <<<"$names" | tr -d ' ')"
+  printf '%s=%s [%s] retained_non_orphan=true no_direct_charge=true\n' \
+    "$label" "$count" "$(paste -sd, <<<"$names")"
+}
+
 printf 'Orphan check\nproject=%s\n' "$PROJECT_ID"
 for stack in "${stacks[@]}"; do
   if [[ -f "$stack/terraform.tfstate" ]]; then
@@ -190,6 +205,18 @@ if service_enabled bigquery.googleapis.com; then
 else
   printf 'bigquery_named_datasets=0 (API disabled)\n'
   printf 'bigquery_anonymous_datasets=0 (API disabled)\n'
+fi
+
+if service_enabled cloudquotas.googleapis.com; then
+  report_retained_names quota_preferences "$(
+    gcloud beta quotas preferences list \
+      --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" \
+      --format='value(name)' \
+      | sed '/^None$/d'
+  )"
+else
+  printf 'quota_preferences=0 (API disabled)\n'
 fi
 
 record_names assessment_service_accounts "$(

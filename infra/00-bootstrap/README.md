@@ -1,8 +1,9 @@
 # 00-bootstrap
 
-This stack enables the assessment APIs and creates the project-scoped $30
-monthly safety budget. The project and billing link must already exist. It
-creates no workload infrastructure.
+This stack enables the assessment APIs, creates the project-scoped $30 monthly
+safety budget, and requests a 96-vCPU `CPUS_ALL_REGIONS` quota ceiling for the
+two three-zone Autopilot cells. The project and billing link must already
+exist. It creates no workload infrastructure.
 
 The hardening release enables IAM Credentials. Binary Authorization and
 Container Analysis metadata APIs are enabled only when
@@ -20,9 +21,17 @@ Copy `.env.example` to the ignored root `.env`, then set its real
 The budget uses Google's default email recipients: Billing Account
 Administrators and Billing Account Users.
 
+Google approval of a quota preference is external to Terraform. The post-apply
+gate requires both the preferred and granted values to be at least 96 before a
+release continues. A quota limit reserves no CPU and has no direct charge;
+actual allocated GKE/Compute resources remain billable. Hard zonal placement
+can still encounter provider capacity even when project quota is available.
+
 When `DOMAIN_NAME` is non-empty, this stack also enables Cloud DNS and
 Certificate Manager before `10-global` creates the optional HTTPS resources.
 
 Local state is gitignored and must be retained for teardown. APIs remain enabled
-after destroy so the final orphan check still works. A shared remote backend is
-a production extension, not a gate blocker.
+after destroy so the final orphan check still works. Google does not delete a
+quota preference through this API, so the orphan check reports it explicitly as
+retained, non-billable project configuration. A shared remote backend is a
+production extension, not a gate blocker.

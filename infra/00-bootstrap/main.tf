@@ -5,6 +5,7 @@ locals {
     "billingbudgets.googleapis.com",
     "cloudbuild.googleapis.com",
     "cloudbilling.googleapis.com",
+    "cloudquotas.googleapis.com",
     "clouderrorreporting.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",

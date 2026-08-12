@@ -81,6 +81,11 @@ Each regional custom NEG name is reused across that region's three zones.
 Terraform looks up six zonal `GCE_VM_IP_PORT` NEGs. It must not use a regional
 NEG data source.
 
+The project-wide `CPUS_ALL_REGIONS` quota preference is frozen at 96 vCPUs.
+Terraform manages preference ID `compute-cpus-all-regions-96`, and the
+post-bootstrap gate requires Google to have granted at least 96. This value is
+a ceiling, not reserved capacity or a spending target.
+
 App A uses three zonal shard Deployments per region. Each shard is pinned to
 one frozen zone and has an HPA range of 1-2, for a regional total of 3-6. All
 shards keep `app: app-a-gateway`, so one ClusterIP Service and one PDB cover

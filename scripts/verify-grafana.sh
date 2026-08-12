@@ -75,6 +75,8 @@ jq -e '
         "resource.label.container_name"
       ])
       and (.timeSeriesList.filters | index("currency-app-(a|b)") != null)
+      and (.timeSeriesList.filters | index("resource.label.container_name") != null)
+      and (.timeSeriesList.filters | index("app-(a-gateway|b-engine)") != null)
     )
   )
   and (
@@ -217,7 +219,7 @@ verify_monitoring_metric() {
   local coverage="${4:-all}"
   local filter
   local response
-  filter="metric.type=\"$metric\" AND resource.type=\"k8s_container\" AND resource.label.\"namespace_name\"=monitoring.regex.full_match(\"currency-app-(a|b)\")$extra_filter"
+  filter="metric.type=\"$metric\" AND resource.type=\"k8s_container\" AND resource.label.\"namespace_name\"=monitoring.regex.full_match(\"currency-app-(a|b)\") AND resource.label.\"container_name\"=monitoring.regex.full_match(\"app-(a-gateway|b-engine)\")$extra_filter"
   response="$(
     gcp_get \
       --get \

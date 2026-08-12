@@ -157,6 +157,7 @@ test-armor:
 	@bash ./scripts/test-cloud-armor.sh exercise
 
 seed-traffic:
+	@bash ./scripts/verify-workloads.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 	@bash ./scripts/generate-traffic.sh "$(APP_A_IMAGE_TAG)" "$(APP_B_IMAGE_TAG)"
 
 verify-bigquery:

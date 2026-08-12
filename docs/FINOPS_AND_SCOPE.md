@@ -8,6 +8,13 @@ controls are a dedicated project, small Autopilot requests, bounded test
 traffic, narrow log export, partition-pruned BigQuery queries, and ordered
 teardown followed by an orphan check.
 
+Terraform manages an approved 96-vCPU project-wide `CPUS_ALL_REGIONS` quota
+preference. Raising quota has no direct fee and allocates nothing; it only
+permits Autopilot to obtain enough backing capacity for six zonal endpoints.
+Actual requested workload resources remain billable. Namespace ResourceQuotas
+bound each app team, while the standing project Owner remains the broad
+exception. Google approval and zonal capacity are external dependencies.
+
 The implementation plan estimated about $7-$15 for roughly 24 hours. That is a
 planning range, not measured billing evidence, and Cloud Billing can lag. The
 live topology also has one more minimum App A Pod per region than the original

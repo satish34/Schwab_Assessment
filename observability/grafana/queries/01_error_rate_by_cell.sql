@@ -6,6 +6,7 @@ WITH public_requests AS (
     SAFE_CAST(jsonPayload.status_code AS INT64) AS status_code
   FROM `schwab-assessment-gke.risk_logs.stdout`
   WHERE $__timeFilter(timestamp)
+    AND resource.labels.namespace_name = 'currency-app-a'
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
     AND jsonPayload.route = '/api/exchange-rates'
@@ -20,6 +21,7 @@ internal_requests AS (
     jsonPayload.decision AS decision
   FROM `schwab-assessment-gke.risk_logs.stdout`
   WHERE $__timeFilter(timestamp)
+    AND resource.labels.namespace_name = 'currency-app-b'
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-b-engine'
     AND jsonPayload.route = '/internal/exchange-rates'

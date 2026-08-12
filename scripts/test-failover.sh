@@ -1183,10 +1183,10 @@ main() {
   [[ "$contexts" == $'gke-risk-usc1\ngke-risk-use4' ]] \
     || fail "the failover kubeconfig lost its exact isolated contexts"
   validate_fault_manifest "$repo_root/k8s/faults/healthy.yaml" \
-    ece13fb9592e731504251babce68ea1ac7975ae2be2a63b24afe5d1ea09052a4 \
+    682b2465d516834966d35f242c68442c22685c602f126ec50c4cc04b438a092f \
     || fail "the checked-in healthy fault manifest is not exact"
   validate_fault_manifest "$repo_root/k8s/faults/unavailable.yaml" \
-    e40a2c4b70de9e0bce08f5ec1365d451bb7695eee8d193060212e568154c4397 \
+    b209b6d6ac923afb623869f65281c668da8aef51743a8186d4bec6040eec2153 \
     || fail "the checked-in unavailable fault manifest is not exact"
 
   global_deadline=$((SECONDS + test_timeout_seconds))

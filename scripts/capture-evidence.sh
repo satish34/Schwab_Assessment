@@ -214,29 +214,30 @@ case "$(uname -s)" in
   *) evidence_kubeconfig_cli="$evidence_kubeconfig" ;;
 esac
 for context in gke-risk-usc1 gke-risk-use4; do
-  nodes_json="$(
-    MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
-      --context="$context" --request-timeout=20s get nodes -o json
-  )"
-  app_a_pods_json="$(
-    MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
-      --context="$context" --namespace=currency-app-a --request-timeout=20s \
-      get pods --selector='app=app-a-gateway' -o json
-  )"
-  app_b_pods_json="$(
-    MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
-      --context="$context" --namespace=currency-app-b --request-timeout=20s \
-      get pods --selector='app=app-b-engine' -o json
-  )"
-  pods_json="$(jq -n --argjson app_a "$app_a_pods_json" --argjson app_b "$app_b_pods_json" \
-    '{items: ($app_a.items + $app_b.items)}')"
+  nodes_file="$work_dir/nodes-$context.json"
+  app_a_pods_file="$work_dir/app-a-pods-$context.json"
+  app_b_pods_file="$work_dir/app-b-pods-$context.json"
+  pods_file="$work_dir/pods-$context.json"
+  MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
+    --context="$context" --request-timeout=20s get nodes -o json \
+    >"$nodes_file"
+  MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
+    --context="$context" --namespace=currency-app-a --request-timeout=20s \
+    get pods --selector='app=app-a-gateway' -o json \
+    >"$app_a_pods_file"
+  MSYS_NO_PATHCONV=1 kubectl --kubeconfig="$evidence_kubeconfig_cli" \
+    --context="$context" --namespace=currency-app-b --request-timeout=20s \
+    get pods --selector='app=app-b-engine' -o json \
+    >"$app_b_pods_file"
+  jq -s '{items: (.[0].items + .[1].items)}' \
+    "$app_a_pods_file" "$app_b_pods_file" >"$pods_file"
   jq -e '
     (.items | length) >= 3 and
     all(.items[];
       (.metadata.labels["topology.kubernetes.io/zone"] | type == "string") and
       any(.status.conditions[]?; .type == "Ready" and .status == "True")
     )
-  ' <<<"$nodes_json" >/dev/null \
+  ' "$nodes_file" >/dev/null \
     || fail "$context node evidence is incomplete"
   jq -e '
     ([.items[] | select(.metadata.labels.app == "app-a-gateway")] | length) >= 3 and
@@ -245,7 +246,7 @@ for context in gke-risk-usc1 gke-risk-use4; do
       .status.phase == "Running" and
       any(.status.conditions[]?; .type == "Ready" and .status == "True")
     )
-  ' <<<"$pods_json" >/dev/null \
+  ' "$pods_file" >/dev/null \
     || fail "$context ready-Pod evidence is incomplete"
   {
     printf '\n[%s] node inventory\n' "$context"
@@ -258,7 +259,7 @@ for context in gke-risk-usc1 gke-risk-use4; do
         ([.status.conditions[] | select(.type == "Ready") | .status][0]),
         .status.nodeInfo.kubeletVersion
       ] | @tsv
-    ' <<<"$nodes_json"
+    ' "$nodes_file"
     printf '[%s] ready workload Pods\n' "$context"
     printf 'NAME\tAPP\tSHARD\tNODE\tREADY\tIMAGE\n'
     jq -r '
@@ -271,7 +272,7 @@ for context in gke-risk-usc1 gke-risk-use4; do
         ([.status.conditions[] | select(.type == "Ready") | .status][0]),
         .spec.containers[0].image
       ] | @tsv
-    ' <<<"$pods_json"
+    ' "$pods_file"
   } >>"$work_dir/02-clusters.txt"
 done
 bash "$repo_root/scripts/wait-negs.sh" "$app_a_sha" "$app_b_sha" \

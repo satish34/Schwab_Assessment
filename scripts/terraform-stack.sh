@@ -286,6 +286,12 @@ else
   run_terraform -chdir="$stack_dir" "$action" -input=false "${approve_args[@]}"
 fi
 
+# Terraform uses a short-lived OAuth token so its cloud operation is bounded
+# and independent of application verification. Never let that bearer token
+# leak into the post-apply gcloud/kubectl gates; those gates authenticate with
+# their explicitly configured user or impersonated service-account identities.
+unset GOOGLE_OAUTH_ACCESS_TOKEN
+
 if [[ "$action" == "apply" && "$stack_dir" == "infra/00-bootstrap" ]]; then
   project_number="$(
     gcloud --configuration="$GCLOUD_CONFIGURATION" projects describe "$PROJECT_ID" \
@@ -325,6 +331,50 @@ if [[ "$action" == "apply" && "$stack_dir" == "infra/00-bootstrap" ]]; then
     }
 
   printf 'Verified project-scoped 30 USD budget and four current-spend thresholds.\n'
+
+  enabled_quota_api="$(
+    gcloud --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" \
+      services list --enabled \
+      --filter='config.name=cloudquotas.googleapis.com' \
+      --format='value(config.name)'
+  )"
+  [[ "$enabled_quota_api" == "cloudquotas.googleapis.com" ]] || {
+    printf 'Cloud Quotas API is not enabled.\n' >&2
+    exit 1
+  }
+
+  quota_preference_json="$(
+    gcloud beta quotas preferences describe compute-cpus-all-regions-96 \
+      --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" --format=json
+  )"
+  jq -e --arg project "$PROJECT_ID" '
+    .name == ("projects/" + $project + "/locations/global/quotaPreferences/compute-cpus-all-regions-96") and
+    .service == "compute.googleapis.com" and
+    .quotaId == "CPUS-ALL-REGIONS-per-project" and
+    (.quotaConfig.preferredValue | tonumber) == 96 and
+    (.quotaConfig.grantedValue | tonumber) >= 96 and
+    ((.reconciling // false) == false)
+  ' <<<"$quota_preference_json" >/dev/null || {
+    printf 'The all-regions CPU quota preference is not approved at the frozen 96-vCPU ceiling.\n' >&2
+    exit 1
+  }
+
+  compute_quotas_json="$(
+    gcloud --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" \
+      compute project-info describe --format=json
+  )"
+  jq -e '
+    [.quotas[] | select(.metric == "CPUS_ALL_REGIONS")] as $matches |
+    ($matches | length) == 1 and ($matches[0].limit | tonumber) >= 96
+  ' <<<"$compute_quotas_json" >/dev/null || {
+    printf 'Compute does not report the approved all-regions CPU limit of at least 96.\n' >&2
+    exit 1
+  }
+
+  printf 'Verified approved 96-vCPU all-regions quota preference; quota is a ceiling, not allocated capacity.\n'
 fi
 
 if [[ "$action" == "apply" && "$stack_dir" == "infra/10-global" ]]; then

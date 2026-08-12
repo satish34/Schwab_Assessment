@@ -254,7 +254,11 @@
               "AND",
               "resource.label.namespace_name",
               "=~",
-              "currency-app-(a|b)"
+              "currency-app-(a|b)",
+              "AND",
+              "resource.label.container_name",
+              "=~",
+              "app-(a-gateway|b-engine)"
             ],
             "groupBys": [
               "resource.label.location",
@@ -374,7 +378,11 @@
               "AND",
               "resource.label.namespace_name",
               "=~",
-              "currency-app-(a|b)"
+              "currency-app-(a|b)",
+              "AND",
+              "resource.label.container_name",
+              "=~",
+              "app-(a-gateway|b-engine)"
             ],
             "groupBys": [
               "resource.label.location",
@@ -411,6 +419,10 @@
               "resource.label.namespace_name",
               "=~",
               "currency-app-(a|b)",
+              "AND",
+              "resource.label.container_name",
+              "=~",
+              "app-(a-gateway|b-engine)",
               "AND",
               "metric.label.memory_type",
               "=",

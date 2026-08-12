@@ -6,6 +6,7 @@ WITH buckets AS (
     APPROX_QUANTILES(SAFE_CAST(jsonPayload.latency_ms AS INT64), 100) AS quantiles
   FROM `schwab-assessment-gke.risk_logs.stdout`
   WHERE $__timeFilter(timestamp)
+    AND resource.labels.namespace_name = 'currency-app-a'
     AND jsonPayload.log_type = 'request'
     AND jsonPayload.service = 'app-a-gateway'
     AND jsonPayload.route = '/api/exchange-rates'
