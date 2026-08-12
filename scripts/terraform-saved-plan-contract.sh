@@ -196,8 +196,17 @@ saved_plan_validate_bootstrap() {
               + ($resource.change.after.service | tojson) + "]"
             ))
             and ($resource.change.after.project == $project)
-            and ($resource.change.after.disable_dependent_services == false)
-            and ($resource.change.after.disable_on_destroy == false)
+            and (
+              if $resource.change.actions == ["no-op"] then
+                (($resource.change.after.disable_dependent_services == false
+                    or $resource.change.after.disable_dependent_services == null)
+                  and ($resource.change.after.disable_on_destroy == false
+                    or $resource.change.after.disable_on_destroy == null))
+              else
+                ($resource.change.after.disable_dependent_services == false)
+                  and ($resource.change.after.disable_on_destroy == false)
+              end
+            )
         elif $resource.address == "data.google_project.current" then
           ($resource.mode == "data")
             and ($resource.type == "google_project")
@@ -1071,6 +1080,19 @@ saved_plan_contract_self_test() {
   printf '%s\n' '{"complete":true,"errored":false,"applyable":true,"variables":{"project_id":{"value":"saved-plan-test-project"},"billing_account_id":{"value":"000000-000000-000000"},"domain_name":{"value":"example.test"},"enable_binary_authorization":{"value":"false"}},"configuration":{"root_module":{"variables":{"billing_account_id":{"sensitive":true}}}},"resource_changes":[{"address":"google_project_service.required[\"logging.googleapis.com\"]","mode":"managed","type":"google_project_service","change":{"actions":["create"],"after":{"project":"saved-plan-test-project","service":"logging.googleapis.com","disable_dependent_services":false,"disable_on_destroy":false}}},{"address":"google_billing_budget.safety","mode":"managed","type":"google_billing_budget","change":{"actions":["create"],"after":{"billing_account":"000000-000000-000000","display_name":"Schwab Assessment - 30 USD Safety Budget","budget_filter":[{"calendar_period":"MONTH"}],"amount":[{"specified_amount":[{"currency_code":"USD","units":"30"}]}],"threshold_rules":[{"spend_basis":"CURRENT_SPEND","threshold_percent":0.5},{"spend_basis":"CURRENT_SPEND","threshold_percent":0.8},{"spend_basis":"CURRENT_SPEND","threshold_percent":0.9},{"spend_basis":"CURRENT_SPEND","threshold_percent":1}]}}},{"address":"google_cloud_quotas_quota_preference.gke_all_regions_cpu_capacity","mode":"managed","type":"google_cloud_quotas_quota_preference","change":{"actions":["create"],"after":{"parent":"projects/saved-plan-test-project","name":"compute-cpus-all-regions-96","service":"compute.googleapis.com","quota_id":"CPUS-ALL-REGIONS-per-project","quota_config":[{"preferred_value":"96"}]}}}],"output_changes":{"enabled_services":{"actions":["update"]},"budget_name":{"actions":["create"]},"gke_all_regions_cpu_quota":{"actions":["create"]}}}' >"$fixture"
   expect_accept '00-bootstrap fresh API create' \
     saved_plan_validate_json infra/00-bootstrap "$fixture"
+  jq '(.resource_changes[0].change.actions) = ["no-op"]
+    | (.resource_changes[0].change.after.disable_dependent_services) = null
+    | (.resource_changes[0].change.after.disable_on_destroy) = null' \
+    "$fixture" >"$runtime_dir/00-imported-service.json"
+  expect_accept '00-bootstrap imported no-op service provider defaults' \
+    saved_plan_validate_json infra/00-bootstrap \
+      "$runtime_dir/00-imported-service.json"
+  jq '(.resource_changes[0].change.actions) = ["create"]' \
+    "$runtime_dir/00-imported-service.json" \
+    >"$runtime_dir/00-create-null-service-flags.json"
+  expect_reject '00-bootstrap new service with unknown destroy posture' \
+    saved_plan_validate_json infra/00-bootstrap \
+      "$runtime_dir/00-create-null-service-flags.json"
 
   fixture="$runtime_dir/10.json"
   printf '%s\n' '{"complete":true,"errored":false,"applyable":true,"variables":{"project_id":{"value":"saved-plan-test-project"},"billing_account_id":{"value":"000000-000000-000000"},"gcloud_configuration":{"value":"saved-plan-test"},"domain_name":{"value":"example.test"},"enable_binary_authorization":{"value":"false"}},"configuration":{"root_module":{"variables":{"billing_account_id":{"sensitive":true}}}},"resource_changes":[{"address":"google_service_account.app_b_telemetry","mode":"managed","type":"google_service_account","change":{"actions":["create"],"after":{"project":"saved-plan-test-project","account_id":"currency-app-b-telemetry"}}}],"output_changes":{"app_b_telemetry_service_account_email":{"actions":["update"]}}}' >"$fixture"
