@@ -242,7 +242,8 @@ if [[ "$action" == "plan" ]]; then
     exit 0
   fi
 
-  git check-ignore --quiet -- "$reviewed_plan" "$reviewed_metadata" || {
+  git check-ignore --quiet -- "$reviewed_plan" \
+    && git check-ignore --quiet -- "$reviewed_metadata" || {
     printf 'Reviewed Terraform plans and metadata must remain ignored.\n' >&2
     exit 1
   }
