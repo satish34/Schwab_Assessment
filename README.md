@@ -19,22 +19,28 @@ query input is needed.
 - Edge: the managed certificate is `ACTIVE`; only HTTPS port 443 is configured.
   There is no HTTP forwarding rule, proxy, or redirect, so plain HTTP receives
   no response.
-- Deployed image SHA: `cb1cba2fdc0ff997378d5ab86b6121a4f33dfa89`
+- Deployed App A and App B image SHA:
+  `8af2f2de66d834a73f4339071b492676a667c069`
 - Backends: six zonal App A NEGs, with all three endpoints healthy in each
   region
+- Capacity: `us-central1` uses zones `b/c/f`; `us-east4` uses `a/b/c`.
+  Terraform manages a 96-vCPU all-regions quota ceiling, which reserves no CPU
+  and has no direct charge.
 - Service authentication: App A obtains a Google-signed ID token through GKE
   Workload Identity Federation; App B validates it. A direct unauthenticated
   internal request returns `401`, while authenticated calls pass in both cells.
-- BigQuery: current-SHA rows cover both cells, both services, controlled
-  errors, authentication denials, latency, and trace joins
-- Failover: 162 requests while `us-central1` was faulted; 15 failed only during
-  transition, none failed before the fault or after public convergence,
-  `us-east4` served, public traffic converged in 67.804 seconds, and all six
+- Team isolation: both namespace deployers passed own-versus-peer RBAC checks;
+  Dev has no production GCP or Kubernetes principal
+- BigQuery: the fresh queries returned 21 error-rate rows, 21 latency rows, 100
+  trace joins, 57 regional-traffic rows, and 14 authentication-rejection rows
+- Failover: 171 requests while `us-central1` was faulted; 18 failed only during
+  transition, none failed outside that window, `us-east4` served, public
+  traffic converged in 63.167 seconds, and all six
   backends recovered
 - Grafana: all four fresh currency panels passed live checks and were visually
   verified in the saved screenshot
-- Error Reporting: the fresh one-hour view grouped 183 controlled App B fault
-  occurrences and 58 App A dependency-failure occurrences
+- Error Reporting: the fresh one-hour view grouped 190 controlled App B fault
+  occurrences and 43 App A dependency-failure occurrences
 - Optional paid controls: Cloud Armor and Binary Authorization are implemented
   behind feature flags but disabled in the live environment. No policy is
   attached and no cluster admission enforcement is enabled.
@@ -94,9 +100,11 @@ project.
 
 ```bash
 make preflight
-make verify IMAGE_TAG=cb1cba2fdc0ff997378d5ab86b6121a4f33dfa89
-make seed-traffic IMAGE_TAG=cb1cba2fdc0ff997378d5ab86b6121a4f33dfa89
-make verify-bigquery IMAGE_TAG=cb1cba2fdc0ff997378d5ab86b6121a4f33dfa89
+APP_A_SHA=8af2f2de66d834a73f4339071b492676a667c069
+APP_B_SHA=8af2f2de66d834a73f4339071b492676a667c069
+make verify APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
+make seed-traffic APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
+make verify-bigquery APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
 make verify-error-reporting
 ```
 
@@ -166,11 +174,14 @@ Make, Git Bash, Java 21, .NET 8, and Python 3 with Matplotlib. The preflight
 also installs a pinned GKE auth plugin under the ignored `.tools` directory
 when needed.
 
-The image pipeline rejects a dirty or uncommitted tree. `make build` submits
-the two application images to Cloud Build with the same full Git SHA; no
-`latest` tag is used. The currency release was built and deployed from one
-clean SHA. Raw capture artifacts remain outside the public source tree and old
-evidence is never relabelled as proof for a new SHA.
+Every image build rejects a dirty or uncommitted tree and uses a full Git SHA;
+no `latest` tag is published. `make build` uses
+`cloudbuild-release.yaml` for a known-compatible App A/App B pair. Independent
+teams instead use `make build-app-a` or `make build-app-b`, each backed by its
+own Cloud Build definition and publishing only that service.
+
+The paired assessment workflow builds and deploys both lanes, with both
+regional applies running in parallel:
 
 For owner workflows, copy `.env.example` to `.env` and replace its billing and
 admin-CIDR placeholders. `.env` is ignored and must never be committed.
@@ -187,21 +198,39 @@ make local-verify
 TF_AUTO_APPROVE=1 make bootstrap
 TF_AUTO_APPROVE=1 make global
 TF_AUTO_APPROVE=1 make clusters
-make build
 RELEASE_SHA="$(git rev-parse HEAD)"
-make deploy-apps IMAGE_TAG="$RELEASE_SHA"
-make wait-negs IMAGE_TAG="$RELEASE_SHA"
+make build # coordinated pair; both images are tagged with the clean HEAD SHA
+make deploy-apps APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make wait-negs APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
 make lb-plan
-TF_AUTO_APPROVE=1 make lb
-make verify IMAGE_TAG="$RELEASE_SHA"
-make seed-traffic IMAGE_TAG="$RELEASE_SHA"
-make verify-bigquery IMAGE_TAG="$RELEASE_SHA"
+TF_AUTO_APPROVE=1 make lb APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make verify APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make seed-traffic APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make verify-bigquery APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
 make verify-error-reporting
-make test-failover IMAGE_TAG="$RELEASE_SHA"
-make capture-evidence IMAGE_TAG="$RELEASE_SHA"
+make test-failover APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make capture-evidence APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
 make plan-check ENABLE_CLOUD_ARMOR=0 ENABLE_BINARY_AUTHORIZATION=0
 make secret-scan
 ```
+
+After the shared platform exists, either team can use a separate clean checkout
+and release without rebuilding or changing the other app:
+
+```bash
+# App A lane; LIVE_APP_B_SHA is the compatible deployed counterpart.
+APP_A_SHA="$(git rev-parse HEAD)"
+make build-app-a APP_A_IMAGE_TAG="$APP_A_SHA"
+make deploy-app-a APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$LIVE_APP_B_SHA"
+
+# App B lane; LIVE_APP_A_SHA is the compatible deployed counterpart.
+APP_B_SHA="$(git rev-parse HEAD)"
+make build-app-b APP_B_IMAGE_TAG="$APP_B_SHA"
+make deploy-app-b APP_A_IMAGE_TAG="$LIVE_APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
+```
+
+Compatible App A and App B lanes may run concurrently. Breaking contracts use
+an expand-contract release instead.
 
 With the default flags, capture records that Cloud Armor and Binary
 Authorization are implemented but disabled. Their live denial exercises are
