@@ -36,3 +36,5 @@ exchange:
   probe-interval-ms: 2000
   cell-failure-threshold: 3
   cell-recovery-threshold: 5
+  telemetry:
+    enabled: "${OTEL_TRACING_ENABLED:false}"

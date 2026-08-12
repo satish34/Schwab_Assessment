@@ -1,0 +1,70 @@
+steps:
+  - id: validate-inputs
+    name: docker.io/library/bash@sha256:ae4668c2560999e65e89532cd2ad1b6688bb23298189f0bd229ef80fa4bd0831
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        [[ '${_GIT_SHA}' =~ ^[0-9a-f]{40}$ ]]
+        [[ '${_REPOSITORY}' == 'us-central1-docker.pkg.dev/${PROJECT_ID}/risk' ]]
+        printf 'Building immutable Grafana evidence image for commit %s.\n' '${_GIT_SHA}'
+
+  - id: build-grafana
+    name: gcr.io/cloud-builders/docker@sha256:617f98016081e2978c0b44184d7b09446027b909f1078b8fdc23efc4c74c5f20
+    args:
+      - build
+      - --pull
+      - --platform=linux/amd64
+      - --label
+      - org.opencontainers.image.revision=${_GIT_SHA}
+      - --label
+      - org.opencontainers.image.version=${_GIT_SHA}
+      - --tag
+      - ${_REPOSITORY}/grafana-evidence:${_GIT_SHA}
+      - observability/grafana
+    waitFor: [validate-inputs]
+
+  - id: export-grafana-for-scan
+    name: gcr.io/cloud-builders/docker@sha256:617f98016081e2978c0b44184d7b09446027b909f1078b8fdc23efc4c74c5f20
+    args:
+      - image
+      - save
+      - --output=/workspace/grafana-evidence-image.tar
+      - ${_REPOSITORY}/grafana-evidence:${_GIT_SHA}
+    waitFor: [build-grafana]
+
+  # Publish is blocked by every HIGH/CRITICAL finding that has a vendor fix.
+  - id: scan-grafana
+    name: docker.io/aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+    args:
+      - image
+      - --input=/workspace/grafana-evidence-image.tar
+      - --scanners=vuln
+      - --severity=HIGH,CRITICAL
+      - --ignore-unfixed
+      - --exit-code=1
+      - --no-progress
+      - --skip-version-check
+      - --timeout=10m
+    waitFor: [export-grafana-for-scan]
+
+substitutions:
+  _GIT_SHA: UNSET
+  _REPOSITORY: UNSET
+
+images:
+  - ${_REPOSITORY}/grafana-evidence:${_GIT_SHA}
+
+serviceAccount: projects/schwab-assessment-gke/serviceAccounts/risk-cloud-build@schwab-assessment-gke.iam.gserviceaccount.com
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  sourceProvenanceHash: [SHA256]
+
+timeout: 1800s
+
+tags:
+  - currency-assessment
+  - grafana-evidence
+  - immutable-image

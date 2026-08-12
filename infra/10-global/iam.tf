@@ -103,6 +103,16 @@ resource "google_service_account_iam_member" "grafana_operator_impersonation" {
   member             = "user:satish.cse7@gmail.com"
 }
 
+resource "google_service_account_iam_member" "grafana_workload_identity" {
+  service_account_id = google_service_account.grafana_reader.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${google_project.current.project_id}.svc.id.goog[currency-observability/currency-grafana]"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "google_service_account" "app_a_caller" {
   project = google_project.current.project_id
 
@@ -120,6 +130,55 @@ resource "google_service_account_iam_member" "app_a_caller_workload_identity" {
     create_before_destroy = true
   }
 }
+
+resource "google_project_iam_member" "app_a_runtime" {
+  for_each = toset([
+    "roles/cloudprofiler.agent",
+    "roles/serviceusage.serviceUsageConsumer",
+    "roles/telemetry.tracesWriter",
+  ])
+
+  project = google_project.current.project_id
+  role    = each.value
+  member  = google_service_account.app_a_caller.member
+
+  depends_on = [google_project_default_service_accounts.defaults]
+}
+
+resource "google_service_account" "app_b_telemetry" {
+  project = google_project.current.project_id
+
+  account_id   = "currency-app-b-telemetry"
+  display_name = "App B telemetry exporter"
+  description  = "Exports App B spans through the Telemetry API; no key is created."
+}
+
+resource "google_service_account_iam_member" "app_b_telemetry_workload_identity" {
+  service_account_id = google_service_account.app_b_telemetry.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${google_project.current.project_id}.svc.id.goog[currency-app-b/app-b-engine]"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "google_project_iam_member" "app_b_telemetry" {
+  for_each = toset([
+    "roles/serviceusage.serviceUsageConsumer",
+    "roles/telemetry.tracesWriter",
+  ])
+
+  project = google_project.current.project_id
+  role    = each.value
+  member  = google_service_account.app_b_telemetry.member
+
+  depends_on = [google_project_default_service_accounts.defaults]
+}
+
+# The runtime service accounts receive only project-scoped roles. Do not add
+# google_service_account_key resources; GKE mints short-lived credentials
+# through the exact Workload Identity bindings above.
 
 resource "google_service_account" "app_deployer" {
   for_each = {

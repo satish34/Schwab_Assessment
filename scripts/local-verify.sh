@@ -296,8 +296,8 @@ for attempt in 1 2; do
   returned_traceparent="$(tr -d '\r' <"$headers" | awk -F ': ' 'tolower($1)=="traceparent" {print $2}' | tail -n 1)"
   [[ "$returned_correlation" == "$correlation_id" ]] \
     || fail "App A did not preserve the response correlation ID"
-  [[ "$returned_traceparent" == "$traceparent" ]] \
-    || fail "App A did not preserve the response trace context"
+  [[ "$returned_traceparent" =~ ^00-$trace_id-${traceparent:36:16}-0[01]$ ]] \
+    || fail "App A did not preserve the trace identifiers with a valid server sampling decision"
   [[ "$returned_trace_id" == "$trace_id" ]] \
     || fail "App A response trace ID does not match the structured-log trace ID"
 done
@@ -322,7 +322,7 @@ generated_trace_id="$(header_value "$generated_headers" x-trace-id)"
 generated_traceparent="$(header_value "$generated_headers" traceparent)"
 [[ "$generated_correlation" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] \
   || fail "App A did not generate a valid correlation ID"
-[[ "$generated_traceparent" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f]$ ]] \
+[[ "$generated_traceparent" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$ ]] \
   || fail "App A did not generate valid trace context"
 [[ "$generated_trace_id" =~ ^[0-9a-f]{32}$ ]] \
   && [[ "$generated_trace_id" == "${generated_traceparent:3:32}" ]] \
@@ -395,8 +395,9 @@ fault_status="$(curl --silent --show-error --max-time 5 \
   || fail "faulted dependency returned duplicate Cache-Control headers"
 [[ "$(header_value "$fault_headers" x-correlation-id)" == "$fault_correlation" ]] \
   || fail "faulted dependency did not preserve the correlation ID"
-[[ "$(header_value "$fault_headers" traceparent)" == "$fault_traceparent" ]] \
-  || fail "faulted dependency did not preserve the trace context"
+[[ "$(header_value "$fault_headers" traceparent)" \
+  =~ ^00-$fault_trace_id-${fault_traceparent:36:16}-0[01]$ ]] \
+  || fail "faulted dependency did not preserve trace identifiers with a valid server sampling decision"
 [[ "$(header_value "$fault_headers" x-trace-id)" == "$fault_trace_id" ]] \
   || fail "faulted dependency did not expose the structured-log trace ID"
 jq -e '

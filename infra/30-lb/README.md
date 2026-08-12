@@ -26,6 +26,12 @@ Cloud Armor Standard policy adds about $9/month base, plus $0.75 per million
 global requests and Cloud Logging ingestion. The live/default flag is `0`, so
 no policy is attached and no feature charge is active.
 
-Apply only after the NEG gate passes. For teardown, destroy this stack while
-the App A Services and NEGs still exist, then remove the Services and wait for
-NEG garbage collection before destroying the clusters.
+The normal posture enables a 5% backend request-log sample and retains 100%
+only when Cloud Armor is enabled. The saved-plan contract permits only the
+expected backend update and rejects delete or replacement actions.
+
+Apply only after the NEG gate passes. `make lb-plan` saves the exact reviewed
+plan; without changing its context, consume it within 30 minutes with
+`TF_AUTO_APPROVE=1 make lb`. For teardown, destroy this stack while the App A
+Services and NEGs still exist, then remove the Services and wait for NEG
+garbage collection before destroying the clusters.

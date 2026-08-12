@@ -65,6 +65,12 @@ spec:
               value: currency-app-a-caller@PROJECT_ID.iam.gserviceaccount.com
             - name: GOOGLE_CLOUD_PROJECT
               value: PROJECT_ID
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: https://telemetry.googleapis.com/v1/traces
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
           resources:
             requests:
               cpu: 250m

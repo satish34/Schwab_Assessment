@@ -235,7 +235,14 @@ verify_cluster() {
         and (.workloadIdentityConfig.workloadPool == $workload_pool)
         and ((.loggingService // "logging.googleapis.com/kubernetes")
           == "logging.googleapis.com/kubernetes")
-        and ($logging_components | sort == ["SYSTEM_COMPONENTS", "WORKLOADS"])
+        and ($logging_components | sort == [
+          "APISERVER",
+          "CONTROLLER_MANAGER",
+          "KCP_HPA",
+          "SCHEDULER",
+          "SYSTEM_COMPONENTS",
+          "WORKLOADS"
+        ])
         and ((.monitoringService // "monitoring.googleapis.com/kubernetes")
           == "monitoring.googleapis.com/kubernetes")
         and ($monitoring_components == ["SYSTEM_COMPONENTS"])

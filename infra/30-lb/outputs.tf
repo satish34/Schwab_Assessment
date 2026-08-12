@@ -18,6 +18,11 @@ output "cloud_armor_enabled" {
   value = var.enable_cloud_armor
 }
 
+output "backend_request_log_sample_rate" {
+  description = "Applied backend request-log sampling contract; 1.0 with Cloud Armor, otherwise 0.05."
+  value       = var.enable_cloud_armor ? 1.0 : 0.05
+}
+
 output "global_ipv4_address" {
   value = local.global_outputs.global_ipv4_address
 }

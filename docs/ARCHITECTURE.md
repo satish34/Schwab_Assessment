@@ -4,6 +4,12 @@ The system uses two active regional GKE cells behind one global HTTPS endpoint.
 Each cluster is shared by two trusted application teams, but App A and App B
 have separate namespaces, deployment identities, and release paths.
 
+The measured live release is `8af2f2de66d834a73f4339071b492676a667c069`.
+Tracing, Java Profiler, expanded platform telemetry, and the GKE Grafana job
+shown below are implemented but require matching runtime evidence. A
+2026-08-12 read-only check confirmed both existing clusters healthy after the
+in-place GKE logging-component update.
+
 ## Runtime architecture
 
 ```mermaid
@@ -37,8 +43,11 @@ flowchart TB
 
 The load balancer reaches six GKE-managed zonal Pod NEGs directly. Terraform
 owns the edge and attaches those NEGs after Kubernetes creates and populates
-them. This avoids Fleet/MCI/MCS, but requires the Kubernetes/NEG gate before the
-load-balancer stack.
+them. There is no GKE Ingress controller in this path: App A Services register
+the Pod NEGs, and the Terraform load balancer uses those endpoints directly.
+This avoids Fleet/MCI/MCS, but requires the Kubernetes/NEG gate before the
+load-balancer stack. Cloud DNS is authoritative for the public hostname;
+cell-local App A-to-App B discovery uses Kubernetes DNS.
 
 ## Request and identity flow
 
@@ -64,6 +73,30 @@ Pods in `currency-app-a`, and it separately verifies the token signature,
 issuer, audience, lifetime, and caller email. NetworkPolicy limits the path;
 the signed token authenticates the workload.
 
+## Security and identity flow
+
+```mermaid
+flowchart LR
+  Internet["Internet client"] -->|"HTTPS on port 443"| Edge["Global HTTPS load balancer"]
+  Edge -->|"health-checked Pod NEG"| AppA["App A Pod<br/>restricted security context"]
+  AppA -->|"NetworkPolicy + signed ID token"| AppB["App B ClusterIP Pod<br/>restricted security context"]
+
+  AKSA["currency-app-a/app-a-gateway KSA"] -. "keyless WIF" .-> AGSA["currency-app-a-caller GSA<br/>token, trace and profile roles"]
+  BKSA["currency-app-b/app-b-engine KSA"] -. "keyless WIF" .-> BGSA["currency-app-b-telemetry GSA<br/>trace writer only"]
+  GKSA["currency-observability/currency-grafana KSA"] -. "keyless WIF" .-> GGSA["grafana-reader GSA<br/>read only"]
+
+  ADeploy["App A deployer"] -->|"workloads only"| ANS["currency-app-a"]
+  BDeploy["App B deployer"] -->|"workloads only"| BNS["currency-app-b"]
+  ADeploy -. "denied" .-> BNS
+  BDeploy -. "denied" .-> ANS
+```
+
+There are no service-account keys or application Secrets. App deployers cannot
+change Services, service accounts, NetworkPolicies, quotas, RBAC, Secrets, Pod
+exec/attach, the peer namespace, or the observability namespace. Dev has no
+production principal. The standing project Owner remains the main assessment
+exception.
+
 ## Team and security boundaries
 
 The platform layer owns namespaces, restricted Pod Security labels, Services
@@ -75,8 +108,8 @@ and no platform-owned object.
 |---|---|
 | Dev | Repository review and lower environments only; no production GCP or Kubernetes principal is provisioned |
 | Ops | `satish.cse7@gmail.com`; platform/Terraform operator and current project Owner, disclosed as an assessment limitation |
-| SRE | `grafana-reader`; keyless read access to the required BigQuery and Monitoring data |
-| CI/CD | Shared `risk-cloud-build` image builder plus `currency-app-a-deployer` and `currency-app-b-deployer`, each writable only in its own namespace |
+| SRE | `grafana-reader`; read-only BigQuery/Monitoring access with an exact keyless Grafana KSA mapping |
+| CI/CD | Shared image builder plus `currency-app-a-deployer` and `currency-app-b-deployer`, each writable only in its own namespace |
 
 This is cooperative multi-tenancy for trusted internal teams. The project,
 clusters, nodes, VPC, edge, build identity, Artifact Registry repository,
@@ -90,37 +123,47 @@ for regulated or mutually untrusted workloads.
 flowchart LR
   subgraph TeamA["App A team"]
     direction TB
-    ASrc["apps/app-a-java/**"] --> ABuild["scripts/build-app-a.sh<br/>cloudbuild-app-a.yaml"]
+    ASrc["apps/app-a-java/**"] --> AYaml["cloudbuild-app-a.yaml"]
+    AYaml --> ABuild["scripts/build-app-a.sh<br/>scripts/build-image.sh"]
     ABuild --> AImage["Immutable App A SHA image"]
-    AImage --> ADeploy["scripts/deploy-app-a.sh<br/>App A deployer identity"]
+    AKustomize["k8s base/app-a + regional overlays"] --> ADeploy["scripts/deploy-app-a.sh<br/>App A deployer identity"]
+    AImage --> ADeploy
     ADeploy --> AC["currency-app-a<br/>us-central1"]
     ADeploy --> AE["currency-app-a<br/>us-east4"]
-    AC --> AGate{"App A two-region gate"}
+    AC --> AGate{"App A rollout, image,<br/>RBAC and health gates"}
     AE --> AGate
   end
 
   subgraph TeamB["App B team"]
     direction TB
-    BSrc["apps/app-b-dotnet/**"] --> BBuild["scripts/build-app-b.sh<br/>cloudbuild-app-b.yaml"]
+    BSrc["apps/app-b-dotnet/**"] --> BYaml["cloudbuild-app-b.yaml"]
+    BYaml --> BBuild["scripts/build-app-b.sh<br/>scripts/build-image.sh"]
     BBuild --> BImage["Immutable App B SHA image"]
-    BImage --> BDeploy["scripts/deploy-app-b.sh<br/>App B deployer identity"]
+    BKustomize["k8s base/app-b + regional overlays"] --> BDeploy["scripts/deploy-app-b.sh<br/>App B deployer identity"]
+    BImage --> BDeploy
     BDeploy --> BC["currency-app-b<br/>us-central1"]
     BDeploy --> BE["currency-app-b<br/>us-east4"]
-    BC --> BGate{"App B two-region gate"}
+    BC --> BGate{"App B rollout, image,<br/>RBAC and auth gates"}
     BE --> BGate
   end
 
-  AGate --> PairGate{"Pair, auth, RBAC,<br/>NEG and HTTPS gates"}
+  Platform["k8s/base/platform + regional platform overlays"] --> Coordinator["scripts/deploy-apps.sh<br/>coordinated parallel path"]
+  Coordinator --> ADeploy
+  Coordinator --> BDeploy
+  AGate --> PairGate{"scripts/verify-deployment-gates.sh<br/>one aggregate pair gate"}
   BGate --> PairGate
 ```
 
-The assessment fast path launches both app lanes and both regional applies in
-parallel, then treats the combined gate as authoritative. Each lane uses its
-own identity, kubeconfig, and work directory and can restore only its own
-previous immutable image. This is appropriate before reviewer traffic begins;
-a production rollout would normally use progressive regions or a canary to
-reduce blast radius. `cloudbuild-release.yaml` remains the coordinated build
-for a known-compatible pair, and breaking APIs still require expand-contract.
+Each lane independently owns its image and namespace. A direct single-app lane
+uses its own identity, kubeconfig, work directory, compatibility gate, and
+rollback image. `scripts/deploy-apps.sh` is the safe parallel orchestrator: it
+applies a fresh or symmetrically expanded platform, starts both lane scripts
+with their combined gates deferred, waits for both, then runs one aggregate
+pair gate. Arbitrary concurrent direct invocations are not supported because
+their gates and rollback decisions could race. `cloudbuild-release.yaml`
+remains an optional coordinated build. Breaking APIs require expand-contract;
+a regulated production rollout would normally add a canary or progressive
+regions.
 
 A deployment passes only when:
 
@@ -132,6 +175,37 @@ A deployment passes only when:
 5. App A cell health and all six zonal NEG backends are healthy.
 6. The public HTTPS response has the expected App B version and trace headers.
 7. An independent lane leaves the other app's image unchanged.
+
+## Observability flow
+
+```mermaid
+flowchart LR
+  AppA["App A"] -->|"structured stdout"| Logging["Cloud Logging"]
+  AppB["App B"] -->|"structured stdout"| Logging
+  Logging --> AppBQ["Partitioned application-log<br/>BigQuery table"]
+  AppBQ --> Job["One-hour GKE Grafana Job<br/>no Service or Ingress"]
+  Monitoring["Cloud Monitoring"] --> Job
+
+  AppA -. "10% direct OTLP" .-> Trace["Cloud Trace"]
+  AppB -. "continues App A decision" .-> Trace
+  AppA -. "Java agent" .-> Profiler["Cloud Profiler"]
+
+  GKE["GKE control plane and nodes"] -. "bounded platform logs" .-> PlatformBQ["currency_platform_logs"]
+  Edge["LB, VPC and firewall"] -. "5% or 10% samples" .-> PlatformBQ
+  Job -. "loopback port-forward" .-> OperatorBrowser["Operator browser"]
+```
+
+The trace exporter is asynchronous and has a two-second export timeout;
+telemetry failure does not fail a request. App A makes the 10% sampling
+decision and ignores an untrusted caller's sampled flag; App B continues that
+decision. Health probes and rejected authentication attempts are excluded.
+The platform sink is separate from application stdout and uses short retention
+and bounded samples. None of these systems is in the customer request path.
+
+The Grafana image bakes its checksum-pinned BigQuery plugin during a
+dedicated Artifact Registry build. Its explicit release-SHA tag is resolved to
+one digest before the Job manifest is rendered; the runtime downloads neither
+the plugin nor a Docker Hub image.
 
 ## Regional failover
 
@@ -157,6 +231,11 @@ scope.
 
 The internal hop is HTTP plus a signed token, not mTLS. Default-deny egress,
 Cloud Armor enforcement, Binary Authorization enforcement, remote Terraform
-state, hosted Grafana with SSO, formal SLOs, and one-region peak-capacity proof
-remain deferred or disabled. See [`FINOPS_AND_SCOPE.md`](FINOPS_AND_SCOPE.md)
-for the cost and production tradeoffs.
+state, durable Grafana with SSO, formal SLOs, and one-region peak-capacity proof
+remain deferred or disabled. For regulated or mutually untrusted workloads,
+separate projects, clusters, build identities, and registries are the stronger
+boundary. See [`FINOPS_AND_SCOPE.md`](FINOPS_AND_SCOPE.md).
+
+Exact frozen cloud-resource identifiers are intentionally omitted from this
+architecture view. They remain in [`CONTRACTS.md`](../CONTRACTS.md) and
+[`BIGQUERY.md`](BIGQUERY.md), where operators need them.

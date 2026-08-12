@@ -35,7 +35,8 @@ public class CellHealthProber {
       fixedRateString = "${exchange.probe-interval-ms:2000}",
       initialDelayString = "${exchange.probe-interval-ms:2000}")
   public void probe() {
-    TraceContext traceContext = traceContextResolver.resolve(null, null).context();
+    TraceContext traceContext =
+        traceContextResolver.newUnsampledTrace(java.util.UUID.randomUUID().toString());
     try {
       DownstreamResult result = appBClient.getExchangeRates(traceContext, true);
       cellHealthState.recordSuccess();

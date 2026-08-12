@@ -15,6 +15,41 @@ public sealed class AppBApiTests
     private const string ExchangeRatesPath = "/internal/exchange-rates";
 
     [Fact]
+    public async Task IncomingW3cTraceContextIsContinuedByTheServerSpan()
+    {
+        const string incomingTraceId = "0123456789abcdef0123456789abcdef";
+        const string appASpanId = "0123456789abcdef";
+        var completedRequest = new TaskCompletionSource<Activity>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Microsoft.AspNetCore",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                if (activity.Kind == ActivityKind.Server)
+                {
+                    completedRequest.TrySetResult(activity);
+                }
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        await using var factory = new AppBFactory();
+        using var client = factory.CreateClient();
+        using var request = CreateRequest();
+
+        using var response = await client.SendAsync(request);
+        var serverSpan = await completedRequest.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(incomingTraceId, serverSpan.TraceId.ToHexString());
+        Assert.Equal(appASpanId, serverSpan.ParentSpanId.ToHexString());
+        Assert.Equal(ActivityIdFormat.W3C, serverSpan.IdFormat);
+    }
+
+    [Fact]
     public async Task GetReturnsExactExchangeRateContractAndIdentity()
     {
         await using var factory = new AppBFactory();

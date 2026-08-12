@@ -1,9 +1,7 @@
 # Troubleshooting
 
-This reviewer view keeps only material issues and outcomes. Detailed working
-history remains recoverable through the incremental Git commits; private
-follow-up notes remain outside Git. No credentials or private state are stored
-here.
+This document records material technical issues, their causes, fixes, and
+verification. No credentials or private state are stored here.
 
 ## Selected assessment scenario
 

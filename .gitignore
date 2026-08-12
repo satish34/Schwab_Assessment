@@ -61,14 +61,13 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
-# Reviewer artifacts are retained locally until separately approved
+# Generated evidence and review packages
 /evidence/
 /deliverables/
 output/playwright/
 .playwright-cli/
 
-# Private interview working notes (never commit)
-.private/INTERVIEW_FOLLOWUP_NOTES.md
-
-# Local agent instructions (never publish)
+# Local notes and automation configuration
+/.private/
+/.claude/
 /AGENTS.md

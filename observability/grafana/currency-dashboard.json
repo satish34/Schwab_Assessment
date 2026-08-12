@@ -27,7 +27,7 @@
         "type": "grafana-bigquery-datasource",
         "uid": "currency-bigquery"
       },
-      "description": "Public App A 5xx and rejected App B authentication percentages from structured request logs.",
+      "description": "BigQuery application error rates over time: public App A 5xx responses and rejected App B authentication requests, separated by cell.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -96,7 +96,7 @@
           "refId": "A"
         }
       ],
-      "title": "Application errors and auth rejections by cell",
+      "title": "Application error rates over time by cell",
       "type": "timeseries"
     },
     {
@@ -168,7 +168,7 @@
           "refId": "A"
         }
       ],
-      "title": "Request latency percentiles by cell",
+      "title": "Request latency percentiles (p50, p95, p99)",
       "type": "timeseries"
     },
     {
@@ -176,7 +176,7 @@
         "type": "stackdriver",
         "uid": "currency-cloud-monitoring"
       },
-      "description": "Container restart deltas grouped by cell and service.",
+      "description": "Pod restart-count deltas grouped and labeled by Kubernetes namespace; cell and service labels preserve troubleshooting context.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -232,7 +232,7 @@
       },
       "targets": [
         {
-          "aliasBy": "{{resource.label.location}} / {{resource.label.cluster_name}} / {{resource.label.container_name}}",
+          "aliasBy": "{{resource.label.namespace_name}} / {{resource.label.location}} / {{resource.label.cluster_name}} / {{resource.label.container_name}}",
           "datasource": {
             "type": "stackdriver",
             "uid": "currency-cloud-monitoring"
@@ -261,6 +261,7 @@
               "app-(a-gateway|b-engine)"
             ],
             "groupBys": [
+              "resource.label.namespace_name",
               "resource.label.location",
               "resource.label.cluster_name",
               "resource.label.container_name"
@@ -272,7 +273,7 @@
           }
         }
       ],
-      "title": "Pod restarts by cell and service",
+      "title": "Pod restart counts by Kubernetes namespace",
       "type": "timeseries"
     },
     {
@@ -280,7 +281,7 @@
         "type": "stackdriver",
         "uid": "currency-cloud-monitoring"
       },
-      "description": "CPU cores and non-evictable memory grouped by cell and service.",
+      "description": "CPU and non-evictable memory utilization trends grouped by cell and service.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -440,7 +441,7 @@
           }
         }
       ],
-      "title": "CPU and memory utilization by cell and service",
+      "title": "Resource utilization trends (CPU and memory)",
       "type": "timeseries"
     }
   ],

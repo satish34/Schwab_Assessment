@@ -20,6 +20,14 @@ resource "google_compute_subnetwork" "cell" {
   private_ip_google_access = true
   stack_type               = "IPV4_ONLY"
 
+  # Retain enough network telemetry to prove the traffic path without turning
+  # this small assessment environment into a high-volume logging source.
+  log_config {
+    aggregation_interval = "INTERVAL_1_MIN"
+    flow_sampling        = 0.05
+    metadata             = "EXCLUDE_ALL_METADATA"
+  }
+
   secondary_ip_range {
     range_name    = each.value.pod_range_name
     ip_cidr_range = each.value.pod_cidr

@@ -31,7 +31,8 @@ for override_name in \
   CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_AUTH_ACCESS_TOKEN_FILE \
   CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
   CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT \
-  GOOGLE_APPLICATION_CREDENTIALS GOOGLE_OAUTH_ACCESS_TOKEN; do
+  GOOGLE_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_KEYFILE_JSON \
+  GOOGLE_CREDENTIALS GOOGLE_IMPERSONATE_SERVICE_ACCOUNT GOOGLE_OAUTH_ACCESS_TOKEN; do
   [[ -z "${!override_name:-}" ]] || fail "$override_name must be unset"
 done
 
@@ -221,12 +222,13 @@ fi
 
 record_names assessment_service_accounts "$(
   gcloud_scoped iam service-accounts list --format='value(email)' \
-    | grep -E '^(risk-gke-usc1-nodes|risk-gke-use4-nodes|risk-cloud-build|grafana-reader|currency-app-a-caller|currency-app-a-deployer|currency-app-b-deployer|currency-app-a-dev|currency-app-b-dev)@' \
+    | grep -E '^(risk-gke-usc1-nodes|risk-gke-use4-nodes|risk-cloud-build|grafana-reader|currency-app-a-caller|currency-app-b-telemetry|currency-app-a-deployer|currency-app-b-deployer|currency-app-a-dev|currency-app-b-dev)@' \
     || true
 )"
 record_names assessment_log_sinks "$(
   gcloud_scoped logging sinks list --format='value(name)' \
-    --filter='name=risk-app-stdout-to-bigquery'
+    | grep -E '^(risk-app-stdout-to-bigquery|currency-platform-to-bigquery)$' \
+    || true
 )"
 
 if service_enabled binaryauthorization.googleapis.com; then

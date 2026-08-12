@@ -32,10 +32,10 @@ jq -e '
   and ([.panels[].id] | sort == [1, 2, 3, 4])
   and ([.panels[].type] | all(. == "timeseries"))
   and ([.panels[].datasource.uid] | sort | unique == ["currency-bigquery", "currency-cloud-monitoring"])
-  and (.panels[] | select(.id == 1) | .title == "Application errors and auth rejections by cell")
-  and (.panels[] | select(.id == 2) | .title == "Request latency percentiles by cell")
-  and (.panels[] | select(.id == 3) | .title == "Pod restarts by cell and service")
-  and (.panels[] | select(.id == 4) | .title == "CPU and memory utilization by cell and service")
+  and (.panels[] | select(.id == 1) | .title == "Application error rates over time by cell")
+  and (.panels[] | select(.id == 2) | .title == "Request latency percentiles (p50, p95, p99)")
+  and (.panels[] | select(.id == 3) | .title == "Pod restart counts by Kubernetes namespace")
+  and (.panels[] | select(.id == 4) | .title == "Resource utilization trends (CPU and memory)")
   and (
     [.panels[] | .targets[] | select(.datasource.uid == "currency-bigquery")]
     | length == 2
@@ -56,10 +56,21 @@ jq -e '
     .panels[]
     | select(.id == 1)
     | .targets[0].rawSql
-    | contains("/internal/exchange-rates")
+    | contains("$__timeGroup(timestamp, $__interval)")
+      and contains("SAFE_DIVIDE(COUNTIF(status_code >= 500), COUNT(*))")
+      and contains("error_rate_pct")
+      and contains("/internal/exchange-rates")
       and contains("app-b-engine")
       and contains("AUTH_REJECTED")
       and contains("status_code = 401")
+  )
+  and (
+    .panels[]
+    | select(.id == 2)
+    | .targets[0].rawSql
+    | contains("quantiles[OFFSET(50)]")
+      and contains("quantiles[OFFSET(95)]")
+      and contains("quantiles[OFFSET(99)]")
   )
   and (
     [.panels[] | .targets[] | select(.datasource.uid == "currency-cloud-monitoring")]
@@ -69,15 +80,31 @@ jq -e '
       and (.timeSeriesList.projectName == "schwab-assessment-gke")
       and (.timeSeriesList.alignmentPeriod == "cloud-monitoring-auto")
       and (.timeSeriesList.crossSeriesReducer == "REDUCE_SUM")
-      and (.timeSeriesList.groupBys == [
-        "resource.label.location",
-        "resource.label.cluster_name",
-        "resource.label.container_name"
-      ])
       and (.timeSeriesList.filters | index("currency-app-(a|b)") != null)
       and (.timeSeriesList.filters | index("resource.label.container_name") != null)
       and (.timeSeriesList.filters | index("app-(a-gateway|b-engine)") != null)
     )
+  )
+  and (
+    .panels[]
+    | select(.id == 3)
+    | (.targets | length == 1)
+      and (.targets[0].aliasBy == "{{resource.label.namespace_name}} / {{resource.label.location}} / {{resource.label.cluster_name}} / {{resource.label.container_name}}")
+      and (.targets[0].timeSeriesList.groupBys == [
+        "resource.label.namespace_name",
+        "resource.label.location",
+        "resource.label.cluster_name",
+        "resource.label.container_name"
+      ])
+  )
+  and (
+    [.panels[] | select(.id == 4) | .targets[]]
+    | length == 2
+      and all(.timeSeriesList.groupBys == [
+        "resource.label.location",
+        "resource.label.cluster_name",
+        "resource.label.container_name"
+      ])
   )
   and (
     [.panels[] | .targets[] | select(.datasource.uid == "currency-cloud-monitoring")
@@ -385,6 +412,28 @@ grafana_api() {
       | MSYS_NO_PATHCONV=1 curl --config - "${curl_args[@]}" "$GRAFANA_URL$path"
   fi
 }
+
+if ! plugin_metadata="$(grafana_api GET '/api/plugins/grafana-bigquery-datasource/settings')"; then
+  printf 'Grafana BigQuery plugin inventory request failed: ' >&2
+  jq -r '.message // .error // "unstructured Grafana error"' \
+    <<<"$plugin_metadata" >&2
+  exit 1
+fi
+jq -e '
+  .id == "grafana-bigquery-datasource" and
+  .type == "datasource" and
+  .info.version == "3.2.0" and
+  .signature == "valid" and
+  .signatureType == "grafana" and
+  .signatureOrg == "Grafana Labs"
+' <<<"$plugin_metadata" >/dev/null || {
+  printf 'Grafana BigQuery plugin is not exact version 3.2.0 with a valid Grafana Labs signature.\n' >&2
+  jq -c '{id,type,version:.info.version,signature,signatureType,signatureOrg}' \
+    <<<"$plugin_metadata" >&2
+  exit 1
+}
+printf '%s\n' \
+  'Verified Grafana BigQuery plugin 3.2.0 and its valid Grafana Labs signature.'
 
 for datasource_uid in currency-bigquery currency-cloud-monitoring; do
   if ! health_response="$(grafana_api GET "/api/datasources/uid/$datasource_uid/health")"; then

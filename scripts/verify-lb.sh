@@ -125,6 +125,14 @@ gcloud_json() {
 
 lb_outputs="$(terraform -chdir=infra/30-lb output -json)"
 global_outputs="$(terraform -chdir=infra/10-global output -json)"
+request_log_contract_applied=false
+backend_request_log_sample_rate=0
+if jq -e 'has("backend_request_log_sample_rate")' <<<"$lb_outputs" >/dev/null; then
+  request_log_contract_applied=true
+  backend_request_log_sample_rate="$(
+    jq -er '.backend_request_log_sample_rate.value | tonumber' <<<"$lb_outputs"
+  )"
+fi
 
 jq -e '
   has("domain_name") and
@@ -164,10 +172,21 @@ jq -e \
   --arg address "$global_address" \
   --arg endpoint "$expected_endpoint" \
   --argjson tls_enabled "$tls_enabled" \
-  --argjson cloud_armor_enabled "$cloud_armor_enabled" '
+  --argjson cloud_armor_enabled "$cloud_armor_enabled" \
+  --argjson request_log_contract_applied "$request_log_contract_applied" \
+  --argjson backend_request_log_sample_rate "$backend_request_log_sample_rate" '
     (.backend_service_name.value == "risk-app-a-gateway-backend") and
     (.health_check_name.value == "risk-app-a-cell-health") and
     (.cloud_armor_enabled.value == $cloud_armor_enabled) and
+    (
+      if $request_log_contract_applied then
+        (.backend_request_log_sample_rate.value == $backend_request_log_sample_rate) and
+        ($backend_request_log_sample_rate == (if $cloud_armor_enabled then 1 else 0.05 end))
+      else
+        ($cloud_armor_enabled == false) and
+        (has("backend_request_log_sample_rate") | not)
+      end
+    ) and
     (
       if $cloud_armor_enabled then
         .security_policy_name.value == "currency-edge-waf"
@@ -233,7 +252,10 @@ jq -e '
 backend_json="$(
   gcloud_json compute backend-services describe "$backend_name" --global
 )"
-jq -e --arg project "$PROJECT_ID" --argjson cloud_armor_enabled "$cloud_armor_enabled" '
+jq -e --arg project "$PROJECT_ID" \
+  --argjson cloud_armor_enabled "$cloud_armor_enabled" \
+  --argjson request_log_contract_applied "$request_log_contract_applied" \
+  --argjson backend_request_log_sample_rate "$backend_request_log_sample_rate" '
   (.name == "risk-app-a-gateway-backend") and
   (.loadBalancingScheme == "EXTERNAL_MANAGED") and
   (.protocol == "HTTP") and
@@ -242,10 +264,16 @@ jq -e --arg project "$PROJECT_ID" --argjson cloud_armor_enabled "$cloud_armor_en
   (.timeoutSec == 10) and
   (.connectionDraining.drainingTimeoutSec == 30) and
   (
-    if $cloud_armor_enabled then
-      (.securityPolicy | endswith("/global/securityPolicies/currency-edge-waf")) and
+    if $request_log_contract_applied then
       (.logConfig.enable == true) and
-      (.logConfig.sampleRate == 1)
+      (.logConfig.sampleRate == $backend_request_log_sample_rate) and
+      (
+        if $cloud_armor_enabled then
+          (.securityPolicy | endswith("/global/securityPolicies/currency-edge-waf"))
+        else
+          ((.securityPolicy // "") == "")
+        end
+      )
     else
       ((.securityPolicy // "") == "") and
       ((.logConfig.enable // false) == false)
@@ -273,6 +301,11 @@ jq -e --arg project "$PROJECT_ID" --argjson cloud_armor_enabled "$cloud_armor_en
   ] | sort_by(.zone))
 ' <<<"$backend_json" >/dev/null \
   || fail "the live backend service or its exact six NEG attachments is invalid"
+
+if [[ "$request_log_contract_applied" == false ]]; then
+  printf '%s\n' \
+    'Backend request logging migration: PENDING (the exact legacy disabled state is accepted until 30-lb applies its output contract).'
+fi
 
 if [[ "$enable_cloud_armor" == "1" ]]; then
   security_policy_json="$(
@@ -630,7 +663,7 @@ grep -Eiq '^strict-transport-security:[[:space:]]*max-age=31536000; includeSubDo
   || fail "the public API security headers do not match the hardened HTTPS contract"
 grep -Eiq '^x-correlation-id:[[:space:]]*[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}[[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate a valid public response correlation ID"
-grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[1-9a-f][[:space:]]*$' <<<"$normalized_headers" \
+grep -Eiq '^traceparent:[[:space:]]*00-[0-9a-f]{32}-[0-9a-f]{16}-0[01][[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not generate valid public response trace context"
 grep -Eiq '^x-trace-id:[[:space:]]*[0-9a-f]{32}[[:space:]]*$' <<<"$normalized_headers" \
   || fail "App A did not expose a valid structured-log trace ID"

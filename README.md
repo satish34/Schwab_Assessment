@@ -13,6 +13,12 @@ query input is needed.
 
 ## Live status
 
+The evidence below describes the deployed App A/App B release
+`8af2f2de66d834a73f4339071b492676a667c069`. The repository also implements
+direct Cloud Trace export, Java Profiler, bounded platform logging, and a
+private GKE-hosted Grafana evidence job. Those capabilities require a matching
+immutable deployment and fresh evidence before they can be described as live.
+
 - Project: `schwab-assessment-gke`
 - Public UI: `https://satish.store`
 - Public API: `https://satish.store/api/exchange-rates`
@@ -44,7 +50,15 @@ query input is needed.
 - Optional paid controls: Cloud Armor and Binary Authorization are implemented
   behind feature flags but disabled in the live environment. No policy is
   attached and no cluster admission enforcement is enabled.
-- Terraform: all four stacks reported `NO_CHANGES`
+- Terraform evidence for the deployed release: all four stacks reported
+  `NO_CHANGES`. The repository's expanded observability design adds three APIs
+  in `00-bootstrap`, eleven resources and two subnet logging updates in
+  `10-global`, and one backend logging update in `30-lb`; `20-cluster` remains
+  unchanged. These desired-state additions are not part of the evidence above.
+- Cluster logging evidence captured on 2026-08-12 showed both existing
+  clusters healthy after the in-place enablement of API server, controller,
+  scheduler, HPA-controller, system, and workload logging. The other
+  observability additions above require release-matched deployment evidence.
 - Teardown: not run; the environment remains live and billable
 
 Raw evidence and the curated deliverables package are retained locally for
@@ -91,27 +105,40 @@ No Google credentials are needed for this review.
 The live endpoint is temporary. The public repository retains the source,
 reproduction steps, and verification summary after the environment is removed.
 
-## Owner-only live verification
+## Release verification
 
-These commands require the named Google identity. `make preflight` also needs
-the ignored `.env`; cluster and data checks use ignored local Terraform/runtime
-state. An interviewer should not change the admin CIDR, billing link, IAM, or
-project.
+Release-coupled verifiers must run from source that matches the deployed image.
+The retained raw evidence is the authoritative proof for `8af2f2d...`; never
+relabel it as proof for a newer image.
+
+After deploying a new full SHA, run the following commands from that exact
+clean commit. They require the named Google identity, ignored `.env`, Terraform
+state, and runtime state.
 
 ```bash
 make preflight
-APP_A_SHA=8af2f2de66d834a73f4339071b492676a667c069
-APP_B_SHA=8af2f2de66d834a73f4339071b492676a667c069
+APP_A_SHA="$(git rev-parse HEAD)"
+APP_B_SHA="$APP_A_SHA"
 make verify APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
 make seed-traffic APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
 make verify-bigquery APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
 make verify-error-reporting
+make verify-cloud-observability APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
+make verify-platform-observability
 ```
 
-To inspect the dashboard locally, run
-`bash scripts/local-grafana-evidence.sh start`, open the printed loopback URL,
-then run the same script with `cleanup`. It uses a short-lived impersonated
-reader token and never creates a service-account key.
+The previously captured Grafana proof used a loopback-only local runtime. The
+repository provides a one-hour GKE Job with no Service or Ingress; the operator
+reaches it only through a loopback port-forward. Its plugin is baked into a
+scanned Artifact Registry image, and its explicit release-SHA tag is resolved
+to one runtime digest. Build and cleanup require the same full SHA:
+
+```bash
+make build-grafana GRAFANA_IMAGE_TAG="$APP_A_SHA"
+make gke-grafana GRAFANA_IMAGE_TAG="$APP_A_SHA"
+make gke-grafana-status GRAFANA_IMAGE_TAG="$APP_A_SHA"
+make cleanup-gke-grafana GRAFANA_IMAGE_TAG="$APP_A_SHA"
+```
 
 ## Automation boundary
 
@@ -122,11 +149,10 @@ drift checks, ordered teardown, and orphan reporting once the approved
 operator inputs are present.
 
 Human action remains intentional for Google login/MFA, billing and payment
-authority, domain purchase and registrar terms, hosted-dashboard access and
-reviewer identity, visual acceptance, Git publication, live-cost continuation,
-and the exact destructive teardown confirmation. Project creation, apply,
-publication, and teardown are technically scriptable, but this repository does
-not cross those financial, access, or destructive boundaries without approval.
+authority, domain purchase and registrar terms, hosted-dashboard identity,
+visual acceptance, Git publication, live-cost continuation, and exact
+destructive teardown confirmation. Automation stops at these financial,
+identity, and destructive-action boundaries.
 After an owned domain is supplied, DNS records, certificate configuration, and
 issuance checks can be automated.
 
@@ -140,17 +166,20 @@ ignored `.env` file:
 DOMAIN_NAME=satish.store
 ```
 
-For a fresh rebuild, run `TF_AUTO_APPROVE=1 make bootstrap` and
-`TF_AUTO_APPROVE=1 make global`. Terraform creates the Cloud DNS zone, the A
-record for the reserved global IP, DNS authorization, managed certificate, and
-certificate map. Read the assigned authoritative servers with:
+For a new empty project, first port the frozen project, operator, domain, and
+identity contract as described in [`docs/REPRODUCE.md`](docs/REPRODUCE.md).
+Then run `make bootstrap-plan`, review it, and run `TF_AUTO_APPROVE=1 make
+bootstrap`; repeat with `make global-plan` and `TF_AUTO_APPROVE=1 make global`.
+Each apply consumes the exact saved plan within its 30-minute contract.
+Terraform creates the Cloud DNS zone, A record, DNS authorization, managed
+certificate, and certificate map. Read the assigned authoritative servers with:
 
 ```bash
 terraform -chdir=infra/10-global output -json dns_name_servers
 ```
 
-For a fresh rebuild, replace the Squarespace domain nameservers with all
-returned name servers. This removes the Squarespace parking records, but
+For a new DNS zone, replace the Squarespace domain nameservers with all returned
+name servers. This removes the Squarespace parking records, but
 registration, privacy, renewal, and the domain lock stay at Squarespace. Do not
 share registrar credentials. Public DNS, the managed certificate, and the
 HTTPS-only frontend are live. Continue a fresh rebuild with:
@@ -159,6 +188,7 @@ HTTPS-only frontend are live. Continue a fresh rebuild with:
 RELEASE_SHA="$(git rev-parse HEAD)"
 make wait-negs IMAGE_TAG="$RELEASE_SHA"
 make lb-plan
+# Review the saved exact plan, then consume it within 30 minutes:
 TF_AUTO_APPROVE=1 make lb
 make verify IMAGE_TAG="$RELEASE_SHA"
 ```
@@ -174,45 +204,11 @@ Make, Git Bash, Java 21, .NET 8, and Python 3 with Matplotlib. The preflight
 also installs a pinned GKE auth plugin under the ignored `.tools` directory
 when needed.
 
-Every image build rejects a dirty or uncommitted tree and uses a full Git SHA;
-no `latest` tag is published. `make build` uses
-`cloudbuild-release.yaml` for a known-compatible App A/App B pair. Independent
-teams instead use `make build-app-a` or `make build-app-b`, each backed by its
-own Cloud Build definition and publishing only that service.
-
-The paired assessment workflow builds and deploys both lanes, with both
-regional applies running in parallel:
-
-For owner workflows, copy `.env.example` to `.env` and replace its billing and
-admin-CIDR placeholders. `.env` is ignored and must never be committed.
-
-For an owner redeployment into the existing billing-enabled project, build and
-deploy the same full repository SHA throughout:
-
-```bash
-make preflight
-make fmt
-make test
-make local-up
-make local-verify
-TF_AUTO_APPROVE=1 make bootstrap
-TF_AUTO_APPROVE=1 make global
-TF_AUTO_APPROVE=1 make clusters
-RELEASE_SHA="$(git rev-parse HEAD)"
-make build # coordinated pair; both images are tagged with the clean HEAD SHA
-make deploy-apps APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make wait-negs APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make lb-plan
-TF_AUTO_APPROVE=1 make lb APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make verify APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make seed-traffic APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make verify-bigquery APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make verify-error-reporting
-make test-failover APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make capture-evidence APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
-make plan-check ENABLE_CLOUD_ARMOR=0 ENABLE_BINARY_AUTHORIZATION=0
-make secret-scan
-```
+Every cloud build rejects a dirty tree and publishes only a full Git-SHA tag;
+`latest` is forbidden. `make build` uses `cloudbuild-release.yaml` for a
+coordinated compatible pair. The exact prerequisites, Terraform order,
+Kubernetes handoff, verification sequence, and external exceptions are in
+[`docs/REPRODUCE.md`](docs/REPRODUCE.md).
 
 After the shared platform exists, either team can use a separate clean checkout
 and release without rebuilding or changing the other app:
@@ -229,8 +225,13 @@ make build-app-b APP_B_IMAGE_TAG="$APP_B_SHA"
 make deploy-app-b APP_A_IMAGE_TAG="$LIVE_APP_A_SHA" APP_B_IMAGE_TAG="$APP_B_SHA"
 ```
 
-Compatible App A and App B lanes may run concurrently. Breaking contracts use
-an expand-contract release instead.
+Each compatible app can build and deploy without rebuilding or mutating the
+other. For simultaneous changes, use `make deploy-apps`: it runs both app lanes
+concurrently, waits for both, then runs one aggregate pair gate. Do not launch
+the two direct deploy commands concurrently because each direct lane owns its
+own authoritative compatibility gate and rollback. Breaking contracts use
+expand-contract. A first deployment or pending observability-namespace
+expansion also uses `make deploy-apps` for the shared platform layer.
 
 With the default flags, capture records that Cloud Armor and Binary
 Authorization are implemented but disabled. Their live denial exercises are
@@ -248,21 +249,23 @@ frontend.
   failover, ownership, and blast radius.
 - [`docs/EVIDENCE.md`](docs/EVIDENCE.md): requirement-to-command verification
   summary and the names of locally retained raw artifacts.
+- [`docs/BIGQUERY.md`](docs/BIGQUERY.md): exported table schema, checked-in
+  analysis SQL, and Grafana query mapping.
 - [`docs/FINOPS_AND_SCOPE.md`](docs/FINOPS_AND_SCOPE.md): cost controls,
   security gaps, and production extensions.
-- [`docs/PLAN_VS_ASSIGNMENT.md`](docs/PLAN_VS_ASSIGNMENT.md): deliberate
+- [`docs/ASSIGNMENT_ALIGNMENT.md`](docs/ASSIGNMENT_ALIGNMENT.md): deliberate
   differences from the assignment.
+- [`docs/REPRODUCE.md`](docs/REPRODUCE.md): concise rebuild and verification
+  runbook, including external prerequisites and exceptions.
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md): concise lessons with an expandable
   full chronology.
 - [`CONTRACTS.md`](CONTRACTS.md): frozen cross-layer names and behavior.
 
-## Publication safety
+## Repository hygiene
 
-Before publication, Git history was rewritten to replace private billing,
-administrator-IP, and unrelated-project identifiers. Author and committer
-timestamps were preserved; commit hashes changed. A fresh-clone history and
-secret scan passed. The assignment PDF, raw evidence, curated deliverables,
-credentials, Terraform state, kubeconfig, and private notes are not published.
+The assignment PDF, raw evidence, curated deliverables, credentials, Terraform
+state, kubeconfigs, and local notes are excluded from version control. The
+secret scan covers the tracked tree and reachable history.
 
 ## Teardown warning
 

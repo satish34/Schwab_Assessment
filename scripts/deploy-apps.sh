@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
+source "$repo_root/scripts/platform-cutover-contract.sh"
 export PATH="$repo_root/.tools/gke-auth/bin:$PATH"
 bash "$repo_root/scripts/ensure-gke-auth-plugin.sh"
 
@@ -18,11 +19,12 @@ app_b_pid=""
 platform_central_pid=""
 platform_east_pid=""
 restore_required=0
-platform_bootstrap_cleanup_required=0
+platform_cleanup_scope=""
 previous_app_a_sha=""
 previous_app_b_sha=""
 bootstrap_mode=0
 platform_absent=0
+platform_expansion=0
 
 fail() {
   printf 'deploy-apps: %s\n' "$*" >&2
@@ -39,9 +41,9 @@ cleanup() {
       wait "$child_pid" 2>/dev/null || true
     fi
   done
-  if ((exit_code != 0 && platform_bootstrap_cleanup_required == 1)); then
-    cleanup_bootstrap_platform \
-      || printf 'deploy-apps: bootstrap platform cleanup needs operator attention.\n' >&2
+  if [[ $exit_code -ne 0 && -n "$platform_cleanup_scope" ]]; then
+    cleanup_platform_apply \
+      || printf 'deploy-apps: platform apply cleanup needs operator attention.\n' >&2
   fi
   if ((exit_code != 0 && restore_required == 1)); then
     restore_previous_pair || printf 'deploy-apps: coordinated rollback needs operator attention.\n' >&2
@@ -80,7 +82,7 @@ app_b_sha="$2"
   && [[ "$app_b_sha" =~ ^[0-9a-f]{40}$ ]] \
   || fail "both image versions must be full lowercase 40-character Git SHAs"
 
-for command_name in gcloud git kubectl sed timeout; do
+for command_name in gcloud git jq kubectl sed timeout; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "$command_name is required"
 done
@@ -253,19 +255,48 @@ restore_previous_pair() {
       "$previous_app_a_sha" "$previous_app_b_sha"
 }
 
-cleanup_bootstrap_platform() {
+cleanup_platform_apply() {
   local context remaining cleanup_failed=0
-  platform_bootstrap_cleanup_required=0
-  printf 'Bootstrap platform apply failed; removing only the two newly created team namespaces.\n' >&2
+  local cleanup_scope="$platform_cleanup_scope"
+  platform_cleanup_scope=""
+  case "$cleanup_scope" in
+    all)
+      printf 'Bootstrap platform apply failed; removing only the three newly created namespaces.\n' >&2
+      ;;
+    observability)
+      printf 'Observability expansion failed; removing only the newly created observability namespace.\n' >&2
+      ;;
+    *) return 1 ;;
+  esac
   for context in gke-risk-usc1 gke-risk-use4; do
-    kubectl --context="$context" --request-timeout=60s \
-      delete namespace currency-app-a currency-app-b \
-      --ignore-not-found=true --wait=true --timeout=10m >&2 \
-      || cleanup_failed=1
-    remaining="$(kubectl --context="$context" --request-timeout=20s \
-      get namespace currency-app-a currency-app-b --ignore-not-found -o name)" \
-      || cleanup_failed=1
-    [[ -z "$remaining" ]] || cleanup_failed=1
+    if [[ "$cleanup_scope" == all ]]; then
+      kubectl --context="$context" --request-timeout=60s \
+        delete namespace currency-app-a currency-app-b currency-observability \
+        --ignore-not-found=true --wait=true --timeout=10m >&2 \
+        || cleanup_failed=1
+      remaining="$(kubectl --context="$context" --request-timeout=20s \
+        get namespace currency-app-a currency-app-b currency-observability \
+          --ignore-not-found -o name)" || cleanup_failed=1
+      [[ -z "$remaining" ]] || cleanup_failed=1
+    else
+      kubectl --context="$context" --request-timeout=60s \
+        delete namespace currency-observability \
+        --ignore-not-found=true --wait=true --timeout=10m >&2 \
+        || cleanup_failed=1
+      remaining="$(kubectl --context="$context" --request-timeout=20s \
+        get namespace currency-observability --ignore-not-found -o name)" \
+        || cleanup_failed=1
+      [[ -z "$remaining" ]] || cleanup_failed=1
+      remaining="$(kubectl --context="$context" --request-timeout=20s \
+        get namespace currency-app-a currency-app-b -o name | tr -d '\r' | sort)" \
+        || cleanup_failed=1
+      [[ "$remaining" == $'namespace/currency-app-a\nnamespace/currency-app-b' ]] \
+        || cleanup_failed=1
+      kubectl --context="$context" --namespace=currency-app-a --request-timeout=20s \
+        get service app-a-gateway -o name >/dev/null || cleanup_failed=1
+      kubectl --context="$context" --namespace=currency-app-b --request-timeout=20s \
+        get service app-b-engine -o name >/dev/null || cleanup_failed=1
+    fi
   done
   ((cleanup_failed == 0))
 }
@@ -279,21 +310,22 @@ render_platform() {
   ! grep -Eq \
     '(^|[^A-Z0-9_])PROJECT_ID([^A-Z0-9_]|$)|(^|[^A-Z0-9_])GIT_SHA([^A-Z0-9_]|$)|:latest([[:space:]]|$)' \
     "$output" || fail "$region platform render contains a placeholder or latest tag"
-  ! grep -Eq '^kind: (Deployment|HorizontalPodAutoscaler|PodDisruptionBudget)$' "$output" \
+  ! grep -Eq '^kind: (Deployment|HorizontalPodAutoscaler|Job|PodDisruptionBudget)$' "$output" \
     || fail "$region platform render contains a team-owned workload resource"
-  [[ "$(grep -Ec '^kind: Namespace$' "$output")" == "2" ]] \
+  [[ "$(grep -Ec '^kind: Namespace$' "$output")" == "3" ]] \
     && grep -Fq -- 'name: currency-app-a' "$output" \
     && grep -Fq -- 'name: currency-app-b' "$output" \
-    || fail "$region platform render does not declare both team namespaces"
+    && grep -Fq -- 'name: currency-observability' "$output" \
+    || fail "$region platform render does not declare both team namespaces and the observability namespace"
   [[ "$(grep -Ec '^kind: Service$' "$output")" == "2" ]] \
-    && [[ "$(grep -Ec '^kind: ServiceAccount$' "$output")" == "2" ]] \
+    && [[ "$(grep -Ec '^kind: ServiceAccount$' "$output")" == "3" ]] \
     && [[ "$(grep -Ec '^kind: Role$' "$output")" == "2" ]] \
     && [[ "$(grep -Ec '^kind: RoleBinding$' "$output")" == "2" ]] \
-    && [[ "$(grep -Ec '^kind: ResourceQuota$' "$output")" == "2" ]] \
+    && [[ "$(grep -Ec '^kind: ResourceQuota$' "$output")" == "3" ]] \
     && [[ "$(grep -Ec '^kind: NetworkPolicy$' "$output")" -ge "2" ]] \
     || fail "$region platform render is missing an ownership or isolation control"
   for mode in enforce audit warn; do
-    [[ "$(grep -Fc -- "pod-security.kubernetes.io/$mode: restricted" "$output")" == "2" ]] \
+    [[ "$(grep -Fc -- "pod-security.kubernetes.io/$mode: restricted" "$output")" == "3" ]] \
       || fail "$region platform render is missing restricted Pod Security $mode labels"
   done
   grep -Fq -- "currency-app-a-deployer@$PROJECT_ID.iam.gserviceaccount.com" "$output" \
@@ -305,8 +337,9 @@ render_platform() {
 
 verify_platform_cutover_state() {
   local context namespace namespace_name service_name
-  local new_namespace_count=0 new_service_count=0
-  local neg_inventory backend_inventory
+  local team_namespace_count=0 observability_namespace_count=0
+  local app_a_service_count=0 app_b_service_count=0
+  local neg_inventory backend_inventory cutover_mode
   for context in gke-risk-usc1 gke-risk-use4; do
     kubectl --context="$context" --request-timeout=20s \
       get namespace default -o name >/dev/null \
@@ -322,11 +355,19 @@ verify_platform_cutover_state() {
         get namespace "$namespace" --ignore-not-found -o name)" \
         || fail "$context could not read namespace $namespace"
       if [[ "$namespace_name" == "namespace/$namespace" ]]; then
-        new_namespace_count=$((new_namespace_count + 1))
+        team_namespace_count=$((team_namespace_count + 1))
       elif [[ -n "$namespace_name" ]]; then
         fail "$context returned an unexpected identity for namespace $namespace"
       fi
     done
+    namespace_name="$(kubectl --context="$context" --request-timeout=20s \
+      get namespace currency-observability --ignore-not-found -o name)" \
+      || fail "$context could not read namespace currency-observability"
+    if [[ "$namespace_name" == "namespace/currency-observability" ]]; then
+      observability_namespace_count=$((observability_namespace_count + 1))
+    elif [[ -n "$namespace_name" ]]; then
+      fail "$context returned an unexpected observability namespace identity"
+    fi
 
     namespace_name="$(kubectl --context="$context" --request-timeout=20s \
       get namespace currency-app-a --ignore-not-found -o name)" \
@@ -338,46 +379,56 @@ verify_platform_cutover_state() {
       [[ -z "$service_name" || "$service_name" == "service/app-a-gateway" ]] \
         || fail "$context returned an unexpected App A Service identity"
       if [[ -n "$service_name" ]]; then
-        new_service_count=$((new_service_count + 1))
+        app_a_service_count=$((app_a_service_count + 1))
+      fi
+    fi
+
+    namespace_name="$(kubectl --context="$context" --request-timeout=20s \
+      get namespace currency-app-b --ignore-not-found -o name)" \
+      || fail "$context could not read namespace currency-app-b"
+    if [[ -n "$namespace_name" ]]; then
+      service_name="$(kubectl --context="$context" --namespace=currency-app-b \
+        --request-timeout=20s get service app-b-engine --ignore-not-found -o name)" \
+        || fail "$context could not read the App B Service inventory"
+      [[ -z "$service_name" || "$service_name" == "service/app-b-engine" ]] \
+        || fail "$context returned an unexpected App B Service identity"
+      if [[ -n "$service_name" ]]; then
+        app_b_service_count=$((app_b_service_count + 1))
       fi
     fi
   done
-  ((new_namespace_count == 0 || new_namespace_count == 4)) \
-    || fail "new team namespaces are only partially present across the two clusters"
-  if ((new_namespace_count == 0)); then
+  cutover_mode="$(classify_platform_inventory \
+    "$team_namespace_count" "$observability_namespace_count" \
+    "$app_a_service_count" "$app_b_service_count")" \
+    || fail "regional platform inventory is partial or asymmetric"
+  if [[ "$cutover_mode" == bootstrap ]]; then
     platform_absent=1
-    ((new_service_count == 0)) \
-      || fail "a new App A Service exists without its expected namespace inventory"
-  fi
-  if ((new_namespace_count == 4 && new_service_count == 0)); then
-    fail "all team namespaces exist but both App A Services are absent; repair or remove the partial platform before retrying"
-  fi
-  if ((new_service_count == 2)); then
-    ((new_namespace_count == 4)) \
-      || fail "the new App A Services exist without all four team namespaces"
+
+    neg_inventory="$(gcloud --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" \
+      compute network-endpoint-groups list --format=json)" \
+      || fail "could not prove that the six old named NEGs are absent"
+    jq -e '[.[] | select(.name == "app-a-neg-usc1" or .name == "app-a-neg-use4")] | length == 0' \
+      <<<"$neg_inventory" >/dev/null \
+      || fail "bootstrap requires all six old named NEGs to be garbage-collected before new Services are created"
+
+    backend_inventory="$(gcloud --configuration="$GCLOUD_CONFIGURATION" \
+      --account="$expected_account" --project="$PROJECT_ID" \
+      compute backend-services list --global --format=json)" \
+      || fail "could not prove that the old load-balancer backend is absent or detached"
+    jq -e '
+      [.[] | select(.name == "risk-app-a-gateway-backend")] as $matches |
+      ($matches | length) <= 1 and
+      all($matches[]; ((.backends // []) | length) == 0)
+    ' <<<"$backend_inventory" >/dev/null \
+      || fail "bootstrap requires the old backend service to be absent or detached from all NEGs"
     return 0
   fi
-  ((new_service_count == 0)) \
-    || fail "the new App A platform Service exists in only one cluster"
-
-  neg_inventory="$(gcloud --configuration="$GCLOUD_CONFIGURATION" \
-    --account="$expected_account" --project="$PROJECT_ID" \
-    compute network-endpoint-groups list --format=json)" \
-    || fail "could not prove that the six old named NEGs are absent"
-  jq -e '[.[] | select(.name == "app-a-neg-usc1" or .name == "app-a-neg-use4")] | length == 0' \
-    <<<"$neg_inventory" >/dev/null \
-    || fail "bootstrap requires all six old named NEGs to be garbage-collected before new Services are created"
-
-  backend_inventory="$(gcloud --configuration="$GCLOUD_CONFIGURATION" \
-    --account="$expected_account" --project="$PROJECT_ID" \
-    compute backend-services list --global --format=json)" \
-    || fail "could not prove that the old load-balancer backend is absent or detached"
-  jq -e '
-    [.[] | select(.name == "risk-app-a-gateway-backend")] as $matches |
-    ($matches | length) <= 1 and
-    all($matches[]; ((.backends // []) | length) == 0)
-  ' <<<"$backend_inventory" >/dev/null \
-    || fail "bootstrap requires the old backend service to be absent or detached from all NEGs"
+  if [[ "$cutover_mode" == expansion ]]; then
+    platform_expansion=1
+  fi
+  # Either the symmetric established two-team platform or the fully expanded
+  # platform is safe. One-cell observability state was rejected above.
 }
 
 prepare_kubeconfig
@@ -408,7 +459,9 @@ if [[ -z "$previous_app_a_sha" && -z "$previous_app_b_sha" ]]; then
   bootstrap_mode=1
 fi
 if ((platform_absent == 1)); then
-  platform_bootstrap_cleanup_required=1
+  platform_cleanup_scope=all
+elif ((platform_expansion == 1)); then
+  platform_cleanup_scope=observability
 fi
 kubectl --context=gke-risk-usc1 --request-timeout=60s \
   apply -f "$work_dir/platform-us-central1.yaml" \
@@ -426,7 +479,7 @@ cat "$work_dir/platform-us-central1.log"
 cat "$work_dir/platform-us-east4.log"
 ((platform_central_status == 0 && platform_east_status == 0)) \
   || fail "one or both regional platform applies failed"
-platform_bootstrap_cleanup_required=0
+platform_cleanup_scope=""
 
 # The app lanes have distinct namespaces, RBAC identities, kubeconfigs, and
 # work directories. They can therefore reconcile the shared clusters safely in

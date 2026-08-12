@@ -15,6 +15,7 @@ import com.schwab.exchange.gateway.TestExchangeRateFixtures;
 import com.schwab.exchange.gateway.auth.AppBIdentityTokenProvider;
 import com.schwab.exchange.gateway.auth.DisabledAppBIdentityTokenProvider;
 import com.schwab.exchange.gateway.auth.IdentityTokenUnavailableException;
+import com.schwab.exchange.gateway.telemetry.DistributedTracing;
 import com.schwab.exchange.gateway.telemetry.TraceContext;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
@@ -47,7 +48,12 @@ class AppBClientTest {
     RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
     server = MockRestServiceServer.bindTo(builder).build();
     circuitBreaker = newCircuitBreaker();
-    client = new AppBClient(builder.build(), circuitBreaker, () -> Optional.of(IDENTITY_TOKEN));
+    client =
+        new AppBClient(
+            builder.build(),
+            circuitBreaker,
+            () -> Optional.of(IDENTITY_TOKEN),
+            DistributedTracing.disabled());
   }
 
   @Test
@@ -100,7 +106,10 @@ class AppBClientTest {
     MockRestServiceServer disabledServer = MockRestServiceServer.bindTo(builder).build();
     AppBClient disabledClient =
         new AppBClient(
-            builder.build(), newCircuitBreaker(), DisabledAppBIdentityTokenProvider.INSTANCE);
+            builder.build(),
+            newCircuitBreaker(),
+            DisabledAppBIdentityTokenProvider.INSTANCE,
+            DistributedTracing.disabled());
     disabledServer
         .expect(once(), requestTo("http://app-b-engine:8080/internal/exchange-rates"))
         .andExpect(headerDoesNotExist("Authorization"))
@@ -116,7 +125,9 @@ class AppBClientTest {
   void googleAuthenticationNeverCallsAppBWithAnEmptyToken() {
     RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
     MockRestServiceServer unusedServer = MockRestServiceServer.bindTo(builder).build();
-    AppBClient failedClient = new AppBClient(builder.build(), newCircuitBreaker(), Optional::empty);
+    AppBClient failedClient =
+        new AppBClient(
+            builder.build(), newCircuitBreaker(), Optional::empty, DistributedTracing.disabled());
 
     assertThatThrownBy(() -> failedClient.getExchangeRates(TRACE_CONTEXT, false))
         .isInstanceOf(DependencyUnavailableException.class)
@@ -136,7 +147,9 @@ class AppBClientTest {
         };
     RestClient.Builder builder = RestClient.builder().baseUrl("http://app-b-engine:8080");
     MockRestServiceServer unusedServer = MockRestServiceServer.bindTo(builder).build();
-    AppBClient failedClient = new AppBClient(builder.build(), newCircuitBreaker(), failedProvider);
+    AppBClient failedClient =
+        new AppBClient(
+            builder.build(), newCircuitBreaker(), failedProvider, DistributedTracing.disabled());
 
     assertThatThrownBy(() -> failedClient.getExchangeRates(TRACE_CONTEXT, false))
         .isInstanceOf(DependencyUnavailableException.class)

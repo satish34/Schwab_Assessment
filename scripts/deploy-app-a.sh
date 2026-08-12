@@ -267,6 +267,10 @@ render_release() {
     && [[ "$(grep -Fc -- "value: $version" "$output")" == "3" ]] \
     && [[ "$(grep -Fc -- 'value: http://app-b-engine.currency-app-b.svc.cluster.local:8080' "$output")" == "3" ]] \
     && [[ "$(grep -Fc -- 'value: google-id-token' "$output")" == "3" ]] \
+    && [[ "$(grep -Fc -- 'name: OTEL_TRACING_ENABLED' "$output")" == "3" ]] \
+    && [[ "$(grep -Fc -- 'name: CLOUD_PROFILER_ENABLED' "$output")" == "3" ]] \
+    && [[ "$(grep -Fc -- 'name: OTEL_TRACES_SAMPLER_ARG' "$output")" == "3" ]] \
+    && [[ "$(grep -Fc -- 'value: "0.1"' "$output")" == "3" ]] \
     && ! grep -Fq -- 'value: disabled' "$output" \
     || fail "$region App A render lost its immutable version or signed cross-namespace path"
 }
@@ -313,6 +317,9 @@ verify_app_a() {
       env(.; "SERVICE_VERSION"; $version) and
       env(.; "APP_B_BASE_URL"; "http://app-b-engine.currency-app-b.svc.cluster.local:8080") and
       env(.; "APP_B_AUTH_MODE"; "google-id-token") and
+      env(.; "OTEL_TRACING_ENABLED"; "true") and
+      env(.; "OTEL_TRACES_SAMPLER_ARG"; "0.1") and
+      env(.; "CLOUD_PROFILER_ENABLED"; "true") and
       (.spec.template.spec.serviceAccountName == "app-a-gateway") and
       (.spec.template.spec.nodeSelector["topology.kubernetes.io/zone"] == zone(.metadata.name)))
   ' <<<"$deployments_json" >/dev/null || fail "$context App A did not reconcile to $target_sha"

@@ -3,7 +3,7 @@ resource "google_binary_authorization_policy" "assessment" {
 
   project = google_project.current.project_id
 
-  description                   = "Only assessment application images and Google-managed system images may run."
+  description                   = "Only assessment runtime images and Google-managed system images may run."
   global_policy_evaluation_mode = "ENABLE"
 
   admission_whitelist_patterns {
@@ -12,6 +12,10 @@ resource "google_binary_authorization_policy" "assessment" {
 
   admission_whitelist_patterns {
     name_pattern = "us-central1-docker.pkg.dev/${google_project.current.project_id}/${google_artifact_registry_repository.risk.repository_id}/app-b"
+  }
+
+  admission_whitelist_patterns {
+    name_pattern = "us-central1-docker.pkg.dev/${google_project.current.project_id}/${google_artifact_registry_repository.risk.repository_id}/grafana-evidence"
   }
 
   default_admission_rule {

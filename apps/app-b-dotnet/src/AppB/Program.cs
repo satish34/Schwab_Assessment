@@ -14,6 +14,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 builder.Services.AddSingleton(sp => AppIdentity.FromConfiguration(
     sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddAppBTracing(
+    builder.Configuration,
+    AppIdentity.FromConfiguration(builder.Configuration));
 builder.Services.AddSingleton(sp => AppBAuthenticationSettings.FromConfiguration(
     sp.GetRequiredService<IConfiguration>(),
     sp.GetRequiredService<IHostEnvironment>()));

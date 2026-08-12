@@ -36,6 +36,24 @@ Every response sets `nosniff`, frame denial, and a hash-based CSP with no
 trusted forwarding headers identify the original request as HTTPS, so local
 HTTP development remains usable.
 
+When `OTEL_TRACING_ENABLED=true`, App A creates an OpenTelemetry server span
+for each public API request and one client span per App B attempt. It preserves
+W3C `traceparent`/`tracestate`, so the `x-trace-id` shown in the UI and written
+to both services' logs identifies the same distributed trace in Cloud Trace.
+Spans export asynchronously and keylessly through Workload Identity directly
+to `https://telemetry.googleapis.com`; no collector or credential file is
+needed. App A makes the 10% decision for both root and remote-parent requests;
+caller-supplied sampled flags are not trusted, local children inherit App A's
+decision, and health checks/background probes create no spans.
+
+`CLOUD_PROFILER_ENABLED=true` starts the pinned, checksum-verified Google Java
+Profiler agent for `app-a-gateway`, using `SERVICE_VERSION` as its version.
+The image contains the agent at build time and still runs as UID/GID 10001 with
+a read-only-compatible root filesystem. The App A Google service account needs
+`roles/telemetry.tracesWriter`, `roles/serviceusage.serviceUsageConsumer`, and
+`roles/cloudprofiler.agent`; Workload Identity supplies Application Default
+Credentials without a secret.
+
 From the repository root, run the pinned Maven verification:
 
 ```bash

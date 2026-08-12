@@ -15,8 +15,8 @@ Actual requested workload resources remain billable. Namespace ResourceQuotas
 bound each app team, while the standing project Owner remains the broad
 exception. Google approval and zonal capacity are external dependencies.
 
-The implementation plan estimated about $7-$15 for roughly 24 hours. That is a
-planning range, not measured billing evidence, and Cloud Billing can lag. The
+An initial estimate was about $7-$15 for roughly 24 hours. That is not measured
+billing evidence, and Cloud Billing can lag. The
 live topology also has one more minimum App A Pod per region than the original
 estimate because every zonal NEG needed a real endpoint. No final actual cost
 is claimed here.
@@ -30,10 +30,21 @@ attached and neither cluster enforces Binary Authorization, so no feature
 charge is active. Current pricing must be reviewed before either control is
 enabled; that opt-in also requires a fresh plan and explicit cost approval.
 
-Terraform state is local and gitignored. This kept bootstrap simple for a
-single-machine assessment, but loss of this working directory would complicate
-safe teardown. A production team should use a restricted, versioned remote
-backend and a managed CI identity.
+The observability configuration is deliberately bounded: Cloud Trace uses
+10% App A sampling; Profiler has no ingestion charge; normal backend logs and
+VPC flows use 5% samples; control-plane and firewall export uses 10%; the
+platform dataset retains partitions for 30 days; and the GKE Grafana Job is
+limited to one Pod for at most one hour. Trace includes the first 2.5 million
+spans per billing account each month before paid ingestion; Logging and
+BigQuery free tiers may cover this small test, but usage above them is billable.
+Pricing and free-tier eligibility can change, so verify current GCP prices
+before apply. No cost claim is made without matching runtime usage evidence.
+
+Terraform state is local and gitignored. This keeps a single-operator bootstrap
+small, but losing state complicates drift management and teardown. A new empty
+project starts new state after the reviewed cross-file contract port; any
+pre-existing declared resource requires import. A production team should use a
+restricted, versioned remote backend and a managed CI identity.
 
 ## Security status
 
@@ -41,9 +52,10 @@ Implemented controls include private GKE nodes, an administrator-only control
 plane `/32`, GKE Workload Identity Federation, Google-signed App A service
 tokens, separate application namespaces, namespace-scoped deployer and
 RBAC, quotas, no developer production principal, a private App B ClusterIP,
-ingress NetworkPolicy,
-hardened Pod/container security contexts, immutable full-SHA tags, and no
-user-managed service-account keys. App B returns `401` for a missing token and
+ingress NetworkPolicy, hardened Pod/container security contexts, immutable
+full-SHA tags, guarded cloud entry points that reject alternate
+credential/impersonation overrides, and no user-managed service-account keys.
+App B returns `401` for a missing token and
 validates the signature and caller claims for authenticated requests.
 
 The image gate blocks every fixable HIGH or CRITICAL vulnerability. App A had
@@ -67,10 +79,10 @@ the scan before promotion.
 | Full enterprise role separation | The Gmail account has no GCP Organization/folder hierarchy; Ops is still the project Owner | Bind Dev, Ops, SRE, and CI/CD groups through Cloud Identity and remove standing Owner access |
 | Remote Terraform state | Local ignored state met the single-operator deadline | Use a versioned remote backend with scoped CI access and recovery testing |
 | NAT, proxy-only subnet, and private service access | No arbitrary internet egress, proxy-only load balancer, or managed private service needs them | Add only for a verified dependency and include its cost/failure path |
-| Database, cache, queue, and backups | The synthetic currency provider is intentionally stateless and has no persistent volume | Choose services from real durability and consistency requirements; test regional recovery |
+| Database, cache, queue, and backups | The synthetic currency provider is intentionally stateless and has no database, persistent volume, or application state in etcd. Terraform, Kustomize, source, and immutable images are the rebuild inputs; no separate GKE etcd or Artifact Registry backup/replication policy is configured | Choose services from real durability and consistency requirements; add cross-region replication, registry retention/replication, remote Terraform state, and tested restore procedures |
 | MCI, multi-cluster Gateway, and MCS | Standalone NEGs give direct Terraform edge ownership without Fleet/MCS or cross-cluster calls | Re-evaluate if Kubernetes-native global policy outweighs added controllers and cost |
-| Full tracing and Java Profiler | Structured logs, trace joins, Error Reporting, and required dashboard sources took priority | Add least-privilege agents/exporters and verify they remain off the request failure path |
-| Durable shared Grafana hosting | The assessment uses a bounded local evidence runtime rather than exposing telemetry publicly | Use Grafana Cloud or a private hosted instance with SSO, a keyless reader identity, and audited Viewer access |
+| Trace/Profiler live proof | Least-privilege direct exporters and verifier contracts are implemented, but the baseline evidence predates them | Deploy both compatible apps and require the exact three-span chain plus current-version App A profile metadata |
+| Durable shared Grafana hosting | The GKE runtime is a one-hour private evidence Job, not a standing service | Use Grafana Cloud or a private hosted instance with SSO, a keyless reader identity, and audited Viewer access |
 
 The surviving cell handled the bounded synthetic test. That does not prove
 production capacity, zero downtime, or an SLO. Before production,

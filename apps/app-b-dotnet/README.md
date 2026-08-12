@@ -32,6 +32,27 @@ with authentication disabled.
 
 Rates are synthetic and are not for financial use.
 
+When tracing is enabled, App B continues App A's W3C `traceparent` as an
+ASP.NET Core server span and sends completed
+spans by OTLP/HTTP directly to Google's Telemetry API.
+Tracing is disabled when `OTEL_TRACES_EXPORTER` is absent or `none`, including
+local Compose and tests. The deployed settings are:
+
+```text
+OTEL_TRACES_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com/v1/traces
+```
+
+Export is asynchronous with a two-second timeout, so an exporter or Telemetry
+API outage does not fail an exchange-rate request. App B obtains short-lived
+Application Default Credentials through its keyless Workload Identity; no
+credential file or token is stored or logged.
+The parent-based sampler honors App A's W3C sampled flag and limits root
+requests without a valid parent to a 10% sample. Continuous
+`x-cell-probe: true` dependency checks and rejected authentication attempts are
+not exported, limiting trace volume to normal application requests.
+
 `make build-app-b` and `make deploy-app-b` use the App B-only Cloud Build
 definition, deployer identity, kubeconfig, and `currency-app-b` workload
 overlay. The App A image and namespace are not mutated.

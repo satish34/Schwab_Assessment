@@ -5,6 +5,7 @@ import com.schwab.exchange.gateway.api.model.ExchangeRatesResponse;
 import com.schwab.exchange.gateway.api.model.ProvidedBy;
 import com.schwab.exchange.gateway.auth.AppBIdentityTokenProvider;
 import com.schwab.exchange.gateway.auth.IdentityTokenUnavailableException;
+import com.schwab.exchange.gateway.telemetry.DistributedTracing;
 import com.schwab.exchange.gateway.telemetry.TraceContext;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
@@ -41,14 +42,17 @@ public class AppBClient {
   private final RestClient restClient;
   private final CircuitBreaker circuitBreaker;
   private final AppBIdentityTokenProvider identityTokenProvider;
+  private final DistributedTracing distributedTracing;
 
   public AppBClient(
       RestClient appBRestClient,
       CircuitBreaker appBCircuitBreaker,
-      AppBIdentityTokenProvider identityTokenProvider) {
+      AppBIdentityTokenProvider identityTokenProvider,
+      DistributedTracing distributedTracing) {
     this.restClient = appBRestClient;
     this.circuitBreaker = appBCircuitBreaker;
     this.identityTokenProvider = identityTokenProvider;
+    this.distributedTracing = distributedTracing;
   }
 
   public DownstreamResult getExchangeRates(TraceContext traceContext, boolean cellProbe) {
@@ -98,20 +102,27 @@ public class AppBClient {
     int attempt = 0;
     while (true) {
       try {
-        return restClient
-            .get()
-            .uri("/internal/exchange-rates")
-            .headers(
-                headers -> {
-                  headers.set("x-correlation-id", traceContext.correlationId());
-                  headers.set("traceparent", traceContext.traceparent());
-                  identityToken.ifPresent(headers::setBearerAuth);
-                  if (cellProbe) {
-                    headers.set("x-cell-probe", "true");
-                  }
-                })
-            .retrieve()
-            .body(ExchangeRatesResponse.class);
+        if (cellProbe) {
+          return executeRequest(traceContext, identityToken, true);
+        }
+        try (DistributedTracing.TraceSpan clientSpan =
+            distributedTracing.startClientSpan(traceContext, false, attempt)) {
+          try {
+            ExchangeRatesResponse response =
+                executeRequest(clientSpan.traceContext(), identityToken, false);
+            clientSpan.complete(200, "");
+            return response;
+          } catch (ResourceAccessException exception) {
+            clientSpan.complete(isTimeout(exception) ? 504 : 503, dependencyError(exception));
+            throw exception;
+          } catch (RestClientException exception) {
+            clientSpan.complete(503, "dependency_http_error");
+            throw exception;
+          } catch (RuntimeException exception) {
+            clientSpan.complete(503, "dependency_unavailable");
+            throw exception;
+          }
+        }
       } catch (ResourceAccessException exception) {
         if (attempt >= MAX_RETRIES) {
           throw exception;
@@ -119,6 +130,31 @@ public class AppBClient {
         attempt++;
       }
     }
+  }
+
+  private ExchangeRatesResponse executeRequest(
+      TraceContext traceContext, Optional<String> identityToken, boolean cellProbe) {
+    return restClient
+        .get()
+        .uri("/internal/exchange-rates")
+        .headers(
+            headers -> {
+              headers.set("x-correlation-id", traceContext.correlationId());
+              headers.set("traceparent", traceContext.traceparent());
+              if (!traceContext.traceState().isBlank()) {
+                headers.set("tracestate", traceContext.traceState());
+              }
+              identityToken.ifPresent(headers::setBearerAuth);
+              if (cellProbe) {
+                headers.set("x-cell-probe", "true");
+              }
+            })
+        .retrieve()
+        .body(ExchangeRatesResponse.class);
+  }
+
+  private static String dependencyError(ResourceAccessException exception) {
+    return isTimeout(exception) ? "downstream_timeout" : "dependency_unavailable";
   }
 
   private static void validateResponse(ExchangeRatesResponse response) {

@@ -85,7 +85,12 @@ class ExchangeRateControllerIntegrationTest {
             .andExpect(header().stringValues(HttpHeaders.CACHE_CONTROL, "no-store"))
             .andExpect(header().string("x-correlation-id", CORRELATION_ID))
             .andExpect(header().string("x-trace-id", "4bf92f3577b34da6a3ce929d0e0e4736"))
-            .andExpect(header().string("traceparent", TRACEPARENT))
+            .andExpect(
+                header()
+                    .string(
+                        "traceparent",
+                        org.hamcrest.Matchers.matchesPattern(
+                            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0[01]")))
             .andExpect(jsonPath("$.baseCurrency").value("USD"))
             .andExpect(jsonPath("$.rateSnapshots.length()").value(10))
             .andExpect(jsonPath("$.rateSnapshots[0].EUR").value(0.92))
@@ -107,7 +112,8 @@ class ExchangeRateControllerIntegrationTest {
     ArgumentCaptor<TraceContext> traceCaptor = ArgumentCaptor.forClass(TraceContext.class);
     verify(appBClient).getExchangeRates(traceCaptor.capture(), eq(false));
     assertThat(traceCaptor.getValue().correlationId()).isEqualTo(CORRELATION_ID);
-    assertThat(traceCaptor.getValue().traceparent()).isEqualTo(TRACEPARENT);
+    assertThat(traceCaptor.getValue().traceparent())
+        .isEqualTo(result.getResponse().getHeader("traceparent"));
   }
 
   @Test

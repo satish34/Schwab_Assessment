@@ -18,6 +18,26 @@ spec:
 apiVersion: v1
 kind: ResourceQuota
 metadata:
+  name: evidence-capacity
+  namespace: currency-observability
+spec:
+  hard:
+    pods: "1"
+    requests.cpu: 250m
+    requests.memory: 512Mi
+    requests.ephemeral-storage: 256Mi
+    limits.cpu: 500m
+    limits.memory: 768Mi
+    limits.ephemeral-storage: 640Mi
+    count/jobs.batch: "1"
+    configmaps: "4"
+    services: "0"
+    secrets: "0"
+    persistentvolumeclaims: "0"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
   name: application-capacity
   namespace: currency-app-b
 spec:

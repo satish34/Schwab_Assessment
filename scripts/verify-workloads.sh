@@ -245,7 +245,10 @@ workload_ready() {
     literal_env("APP_B_AUTH_MODE"; "google-id-token") and
     literal_env("APP_B_TOKEN_AUDIENCE"; $auth_audience) and
     literal_env("APP_A_IDENTITY_EMAIL"; $caller_email) and
-    literal_env("GOOGLE_CLOUD_PROJECT"; $project_id)
+    literal_env("GOOGLE_CLOUD_PROJECT"; $project_id) and
+    literal_env("OTEL_TRACES_EXPORTER"; "otlp") and
+    literal_env("OTEL_EXPORTER_OTLP_ENDPOINT"; "https://telemetry.googleapis.com/v1/traces") and
+    literal_env("OTEL_EXPORTER_OTLP_PROTOCOL"; "http/protobuf")
   ' <<<"$deployment_json" >/dev/null || return 1
 
   replicas="$(jq -r '.spec.replicas' <<<"$deployment_json" | tr -d '\r')"
@@ -367,6 +370,9 @@ app_a_shards_ready() {
         literal_env("APP_B_AUTH_MODE"; "google-id-token") and
         literal_env("APP_B_TOKEN_AUDIENCE"; $auth_audience) and
         literal_env("GOOGLE_CLOUD_PROJECT"; $project_id) and
+        literal_env("OTEL_TRACING_ENABLED"; "true") and
+        literal_env("OTEL_TRACES_SAMPLER_ARG"; "0.1") and
+        literal_env("CLOUD_PROFILER_ENABLED"; "true") and
         (.spec.template.spec.nodeSelector["topology.kubernetes.io/zone"]
           == expected_zone($shard)) and
         ([.spec.template.spec.containers[].image] == [$image])
@@ -554,6 +560,7 @@ verify_services() {
 verify_service_accounts() {
   local context="$1"
   local caller_email="currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com"
+  local app_b_telemetry_email="currency-app-b-telemetry@$PROJECT_ID.iam.gserviceaccount.com"
   local app_a_json
   local app_b_json
 
@@ -571,11 +578,11 @@ verify_service_accounts() {
     (.metadata.annotations["iam.gke.io/gcp-service-account"] == $caller)
   ' <<<"$app_a_json" >/dev/null \
     || fail "$context App A Kubernetes service account is not bound to the exact caller identity"
-  jq -e '
+  jq -e --arg telemetry "$app_b_telemetry_email" '
     (.automountServiceAccountToken == false) and
-    ((.metadata.annotations["iam.gke.io/gcp-service-account"] // "") == "")
+    (.metadata.annotations["iam.gke.io/gcp-service-account"] == $telemetry)
   ' <<<"$app_b_json" >/dev/null \
-    || fail "$context App B Kubernetes service account must remain unmapped"
+    || fail "$context App B Kubernetes service account is not bound to the telemetry-only identity"
 }
 
 random_hex() {

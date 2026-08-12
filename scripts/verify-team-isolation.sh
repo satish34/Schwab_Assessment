@@ -94,6 +94,7 @@ prepare_kubeconfig() {
       KUBECONFIG="$cli" kubectl config rename-context "$source_context" "$context" >/dev/null
     fi
   done
+
   [[ "$(KUBECONFIG="$cli" kubectl config get-contexts -o name | tr -d '\r' | sort)" \
       == $'gke-risk-usc1\ngke-risk-use4' ]] \
     || fail "isolated kubeconfig has an unexpected context inventory"
@@ -139,9 +140,9 @@ prepare_kubeconfig "$app_b_kubeconfig" "$app_b_deployer"
 
 for context in gke-risk-usc1 gke-risk-use4; do
   namespaces_json="$(kube "$operator_kubeconfig" "" --context="$context" \
-    --request-timeout=20s get namespaces currency-app-a currency-app-b -o json)"
+    --request-timeout=20s get namespaces currency-app-a currency-app-b currency-observability -o json)"
   jq -e '
-    ([.items[].metadata.name] | sort) == ["currency-app-a", "currency-app-b"] and
+    ([.items[].metadata.name] | sort) == ["currency-app-a", "currency-app-b", "currency-observability"] and
     all(.items[];
       .metadata.labels["pod-security.kubernetes.io/enforce"] == "restricted" and
       .metadata.labels["pod-security.kubernetes.io/audit"] == "restricted" and
@@ -207,6 +208,33 @@ for context in gke-risk-usc1 gke-risk-use4; do
     ' <<<"$role_json" >/dev/null || fail "$context/$namespace deployer Role is overbroad or incomplete"
   done
 
+  observability_quota="$(kube "$operator_kubeconfig" "" --context="$context" \
+    --namespace=currency-observability --request-timeout=20s \
+    get resourcequota evidence-capacity -o json)"
+  jq -e '.spec.hard == {
+    "configmaps":"4",
+    "count/jobs.batch":"1",
+    "limits.cpu":"500m",
+    "limits.ephemeral-storage":"640Mi",
+    "limits.memory":"768Mi",
+    "persistentvolumeclaims":"0",
+    "pods":"1",
+    "requests.cpu":"250m",
+    "requests.ephemeral-storage":"256Mi",
+    "requests.memory":"512Mi",
+    "secrets":"0",
+    "services":"0"
+  }' <<<"$observability_quota" >/dev/null \
+    || fail "$context/currency-observability quota contract changed"
+  observability_roles="$(kube "$operator_kubeconfig" "" --context="$context" \
+    --namespace=currency-observability --request-timeout=20s get roles -o json)"
+  observability_bindings="$(kube "$operator_kubeconfig" "" --context="$context" \
+    --namespace=currency-observability --request-timeout=20s get rolebindings -o json)"
+  jq -e '(.items | length) == 0' <<<"$observability_roles" >/dev/null \
+    || fail "$context/currency-observability must not grant a namespaced Role"
+  jq -e '(.items | length) == 0' <<<"$observability_bindings" >/dev/null \
+    || fail "$context/currency-observability must not grant a namespaced RoleBinding"
+
   app_a_binding="$(kube "$operator_kubeconfig" "" --context="$context" --namespace=currency-app-a \
     --request-timeout=20s get rolebinding application-deployer -o json)"
   app_b_binding="$(kube "$operator_kubeconfig" "" --context="$context" --namespace=currency-app-b \
@@ -222,12 +250,32 @@ for context in gke-risk-usc1 gke-risk-use4; do
     --request-timeout=20s get serviceaccount app-a-gateway -o json)"
   app_b_sa="$(kube "$operator_kubeconfig" "" --context="$context" --namespace=currency-app-b \
     --request-timeout=20s get serviceaccount app-b-engine -o json)"
+  grafana_sa="$(kube "$operator_kubeconfig" "" --context="$context" --namespace=currency-observability \
+    --request-timeout=20s get serviceaccount currency-grafana -o json)"
   jq -e --arg caller "currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com" \
     '.automountServiceAccountToken == false and .metadata.annotations["iam.gke.io/gcp-service-account"] == $caller' \
     <<<"$app_a_sa" >/dev/null || fail "$context App A KSA identity changed"
-  jq -e '.automountServiceAccountToken == false and
-    ((.metadata.annotations["iam.gke.io/gcp-service-account"] // "") == "")' \
-    <<<"$app_b_sa" >/dev/null || fail "$context App B unexpectedly gained a GSA identity"
+  jq -e --arg telemetry "currency-app-b-telemetry@$PROJECT_ID.iam.gserviceaccount.com" \
+    '.automountServiceAccountToken == false and .metadata.annotations["iam.gke.io/gcp-service-account"] == $telemetry' \
+    <<<"$app_b_sa" >/dev/null || fail "$context App B telemetry identity changed"
+  jq -e --arg reader "grafana-reader@$PROJECT_ID.iam.gserviceaccount.com" \
+    '.automountServiceAccountToken == false and .metadata.annotations["iam.gke.io/gcp-service-account"] == $reader' \
+    <<<"$grafana_sa" >/dev/null || fail "$context Grafana evidence identity changed"
+
+  observability_inventory="$(kube "$operator_kubeconfig" "" --context="$context" \
+    --namespace=currency-observability --request-timeout=20s get all -o json)"
+  jq -e '([.items[]?] | length) == 0' <<<"$observability_inventory" >/dev/null \
+    || fail "$context must have no standing observability workloads or Services"
+  observability_secrets="$(kube "$operator_kubeconfig" "" --context="$context" \
+    --namespace=currency-observability --request-timeout=20s get secrets -o json)"
+  jq -e '([.items[]?] | length) == 0' <<<"$observability_secrets" >/dev/null \
+    || fail "$context observability namespace contains a stored Secret"
+  observability_policies="$(kube "$operator_kubeconfig" "" --context="$context" \
+    --namespace=currency-observability --request-timeout=20s get networkpolicies -o json)"
+  jq -e '([.items[].metadata.name] | sort) == ["default-deny-ingress"] and
+    .items[0].spec.podSelector == {} and .items[0].spec.policyTypes == ["Ingress"] and
+    ((.items[0].spec.ingress // []) == []) and ((.items[0].spec.egress // []) == [])' \
+    <<<"$observability_policies" >/dev/null || fail "$context observability ingress isolation changed"
 
   app_a_policies="$(kube "$operator_kubeconfig" "" --context="$context" --namespace=currency-app-a \
     --request-timeout=20s get networkpolicies -o json)"
@@ -278,10 +326,10 @@ for context in gke-risk-usc1 gke-risk-use4; do
   for lane in app-a app-b; do
     if [[ "$lane" == app-a ]]; then
       path="$app_a_kubeconfig"; identity="$app_a_deployer"
-      own=currency-app-a; other=currency-app-b
+      own=currency-app-a; other=currency-app-b; platform=currency-observability
     else
       path="$app_b_kubeconfig"; identity="$app_b_deployer"
-      own=currency-app-b; other=currency-app-a
+      own=currency-app-b; other=currency-app-a; platform=currency-observability
     fi
     for resource in deployments.apps horizontalpodautoscalers.autoscaling poddisruptionbudgets.policy; do
       for verb in get list watch create update patch delete; do
@@ -298,6 +346,7 @@ for context in gke-risk-usc1 gke-risk-use4; do
     for verb in get list watch create update patch delete; do
       expect_can_i "$path" "$identity" "$context" no "$verb" secrets "$own"
       expect_can_i "$path" "$identity" "$context" no "$verb" secrets "$other"
+      expect_can_i "$path" "$identity" "$context" no "$verb" secrets "$platform"
     done
     for verb in create update patch delete; do
       expect_can_i "$path" "$identity" "$context" no "$verb" pods "$own"
@@ -308,12 +357,16 @@ for context in gke-risk-usc1 gke-risk-use4; do
     expect_can_i "$path" "$identity" "$context" no create pods/exec "$other"
     expect_can_i "$path" "$identity" "$context" no create pods/attach "$other"
     expect_can_i "$path" "$identity" "$context" no create pods/portforward "$other"
+    expect_can_i "$path" "$identity" "$context" no create pods/exec "$platform"
+    expect_can_i "$path" "$identity" "$context" no create pods/attach "$platform"
+    expect_can_i "$path" "$identity" "$context" no create pods/portforward "$platform"
     for resource in deployments.apps horizontalpodautoscalers.autoscaling \
       poddisruptionbudgets.policy pods pods/log configmaps services serviceaccounts \
       networkpolicies.networking.k8s.io roles.rbac.authorization.k8s.io \
       rolebindings.rbac.authorization.k8s.io resourcequotas; do
       for verb in get list watch create update patch delete; do
         expect_can_i "$path" "$identity" "$context" no "$verb" "$resource" "$other"
+        expect_can_i "$path" "$identity" "$context" no "$verb" "$resource" "$platform"
       done
     done
   done

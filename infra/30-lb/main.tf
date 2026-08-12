@@ -37,13 +37,12 @@ resource "google_compute_backend_service" "app_a" {
   security_policy                 = var.enable_cloud_armor ? google_compute_security_policy.currency_edge[0].id : null
   deletion_policy                 = "DELETE"
 
-  dynamic "log_config" {
-    for_each = var.enable_cloud_armor ? [true] : []
+  log_config {
+    enable = true
 
-    content {
-      enable      = true
-      sample_rate = 1.0
-    }
+    # Full request logs are required when exercising Cloud Armor. The normal
+    # disabled-Armor posture keeps a representative, low-cost edge sample.
+    sample_rate = var.enable_cloud_armor ? 1.0 : 0.05
   }
 
   dynamic "backend" {

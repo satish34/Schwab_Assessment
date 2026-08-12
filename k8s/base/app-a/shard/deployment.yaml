@@ -56,6 +56,12 @@ spec:
               value: https://app-b-engine.schwab-assessment.internal
             - name: GOOGLE_CLOUD_PROJECT
               value: PROJECT_ID
+            - name: OTEL_TRACING_ENABLED
+              value: "true"
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "0.1"
+            - name: CLOUD_PROFILER_ENABLED
+              value: "true"
           resources:
             requests:
               cpu: 250m

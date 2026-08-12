@@ -64,7 +64,14 @@ resource "google_container_cluster" "this" {
   }
 
   logging_config {
-    enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
+    enable_components = [
+      "APISERVER",
+      "CONTROLLER_MANAGER",
+      "KCP_HPA",
+      "SCHEDULER",
+      "SYSTEM_COMPONENTS",
+      "WORKLOADS",
+    ]
   }
 
   monitoring_config {

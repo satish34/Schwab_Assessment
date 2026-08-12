@@ -39,20 +39,39 @@ trace joins, 57 regional-traffic rows, and 14 authentication-rejection rows.
 
 | Item | Status | What remains |
 |---|---|---|
-| Final drift report | **PASS** | `make plan-check` reported `NO_CHANGES` for all four Terraform stacks and wrote `12-plan-check.txt`. |
+| Deployed-release drift report | **PASS for `8af2f2d...`** | `make plan-check` reported `NO_CHANGES` for all four stacks and wrote `12-plan-check.txt`. Any later source release requires a new drift report. |
 | Cloud Armor | **IMPLEMENTED / DISABLED LIVE** | The default flag is `0`; no policy is attached and no feature charge is active. Enabling it requires separate cost approval and a bounded rate/WAF exercise. Local proof: `15-cloud-armor.txt`. |
 | Binary Authorization | **IMPLEMENTED / DISABLED LIVE** | The default flag is `0`; both clusters report admission enforcement disabled. Enabling it requires separate cost approval, an in-place-only plan, and a non-persisting denial test. Local proof: `16-binary-authorization.txt`. |
 | Teardown and orphan check | **NOT RUN** | Run only after authorization with the exact destroy confirmation. A successful ordered teardown writes `13-teardown.txt`. |
-| Profiler and exported Trace | **P1 / NOT CLAIMED** | Cross-service trace IDs exist and join in BigQuery, but Cloud Trace currently has zero exported spans and no Profiler evidence was captured. |
+| Cloud Trace and Java Profiler | **IMPLEMENTED / NOT IN BASELINE EVIDENCE** | Tests cover the direct keyless exporters, 10% App A sampling boundary, three-span parent chain, and request-safe failure behavior. A matching immutable deployment must pass the live verifier before these controls are claimed live. |
+| Expanded platform observability | **PARTIAL LIVE / NEW EVIDENCE REQUIRED** | A 2026-08-12 read-only check found both clusters healthy with the intended logging components. The repository also defines a platform dataset/sink, VPC flow logging, backend request logging, an observability namespace, and a private GKE Grafana Job; each needs matching runtime proof. |
 
-Regenerate the safe pre-teardown CLI proof for the deployed release with:
+## Evidence for a new release
+
+Evidence is immutable-release-specific. Do not reuse or relabel the retained
+`8af2f2d...` artifacts for a newer image. After deploying a new full SHA, run
+the API, authentication, workload, NEG, Trace, Profiler, platform, Grafana,
+failover, and drift gates, then capture the new artifacts:
 
 ```bash
+RELEASE_SHA="$(git rev-parse HEAD)"
 make capture-evidence \
-  APP_A_IMAGE_TAG=8af2f2de66d834a73f4339071b492676a667c069 \
-  APP_B_IMAGE_TAG=8af2f2de66d834a73f4339071b492676a667c069
+  APP_A_IMAGE_TAG="$RELEASE_SHA" \
+  APP_B_IMAGE_TAG="$RELEASE_SHA"
+make capture-observability-manifest \
+  APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make capture-observability-cloud \
+  APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make capture-observability-platform
+make capture-observability-grafana-start GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+# Save evidence/08-grafana.png from the printed loopback URL.
+make capture-observability-grafana-verify GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+make capture-observability-grafana-cleanup GRAFANA_IMAGE_TAG="$RELEASE_SHA"
 ```
 
-The CLI capture is separate from the direct Grafana screenshot. Do not treat a
+The phased commands write `18-release-manifest.txt` through
+`21-gke-grafana.txt` only after each live gate passes. They never store access
+tokens or Profiler payload bytes. The CLI capture is separate from the direct
+Grafana screenshot. Do not treat a
 missing file, generated placeholder, or static dashboard check as equivalent
 to the completed live panel gate.

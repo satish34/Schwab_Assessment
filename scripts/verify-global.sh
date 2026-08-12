@@ -33,19 +33,23 @@ node_use4="risk-gke-use4-nodes@$PROJECT_ID.iam.gserviceaccount.com"
 build_sa="risk-cloud-build@$PROJECT_ID.iam.gserviceaccount.com"
 grafana_sa="grafana-reader@$PROJECT_ID.iam.gserviceaccount.com"
 app_a_caller_sa="currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com"
+app_b_telemetry_sa="currency-app-b-telemetry@$PROJECT_ID.iam.gserviceaccount.com"
 app_a_deployer_sa="currency-app-a-deployer@$PROJECT_ID.iam.gserviceaccount.com"
 app_b_deployer_sa="currency-app-b-deployer@$PROJECT_ID.iam.gserviceaccount.com"
 
-iamcredentials_enabled="$(
+required_runtime_apis="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" --project="$PROJECT_ID" \
     services list --enabled \
-    --filter='config.name=iamcredentials.googleapis.com' \
     --format='value(config.name)'
 )"
-[[ "$iamcredentials_enabled" == "iamcredentials.googleapis.com" ]] || {
-  printf 'IAM Service Account Credentials API is not enabled by Terraform.\n' >&2
-  exit 1
-}
+for required_api in \
+  cloudprofiler.googleapis.com cloudtrace.googleapis.com \
+  iamcredentials.googleapis.com telemetry.googleapis.com; do
+  grep -Fxq "$required_api" <<<"$required_runtime_apis" || {
+    printf '%s is not enabled by Terraform.\n' "$required_api" >&2
+    exit 1
+  }
+done
 
 outputs_json="$(terraform -chdir=infra/10-global output -json)"
 jq -e \
@@ -55,6 +59,7 @@ jq -e \
   --arg build "$build_sa" \
   --arg grafana "$grafana_sa" \
   --arg app_a_caller "$app_a_caller_sa" \
+  --arg app_b_telemetry "$app_b_telemetry_sa" \
   --arg app_a_deployer "$app_a_deployer_sa" \
   --arg app_b_deployer "$app_b_deployer_sa" \
   '
@@ -81,6 +86,7 @@ jq -e \
     })
     and (.build_service_account_email.value == $build)
     and (.app_a_caller_service_account_email.value == $app_a_caller)
+    and (.app_b_telemetry_service_account_email.value == $app_b_telemetry)
     and (.app_deployer_service_account_emails.value == {
       "app_a": $app_a_deployer,
       "app_b": $app_b_deployer
@@ -231,6 +237,7 @@ jq -e \
   --arg build "serviceAccount:$build_sa" \
   --arg grafana "serviceAccount:$grafana_sa" \
   --arg app_a_caller "serviceAccount:$app_a_caller_sa" \
+  --arg app_b_telemetry "serviceAccount:$app_b_telemetry_sa" \
   --arg app_a_deployer "serviceAccount:$app_a_deployer_sa" \
   --arg app_b_deployer "serviceAccount:$app_b_deployer_sa" \
   --arg operator "user:$expected_account" \
@@ -243,7 +250,15 @@ jq -e \
     and (roles_for($node_use4) == ["roles/container.defaultNodeServiceAccount"])
     and (roles_for($build) == ["roles/logging.logWriter"])
     and (roles_for($grafana) == ([$grafana_metadata, "roles/bigquery.jobUser", "roles/monitoring.viewer"] | sort))
-    and (roles_for($app_a_caller) == [])
+    and (roles_for($app_a_caller) == ([
+      "roles/cloudprofiler.agent",
+      "roles/serviceusage.serviceUsageConsumer",
+      "roles/telemetry.tracesWriter"
+    ] | sort))
+    and (roles_for($app_b_telemetry) == ([
+      "roles/serviceusage.serviceUsageConsumer",
+      "roles/telemetry.tracesWriter"
+    ] | sort))
     and (roles_for($app_a_deployer) == ["roles/container.clusterViewer"])
     and (roles_for($app_b_deployer) == ["roles/container.clusterViewer"])
     and (roles_for($operator) == ["roles/owner"])
@@ -386,7 +401,9 @@ grafana_service_account_policy="$(
     --project="$PROJECT_ID" \
     --format=json
 )"
-jq -e --arg operator "user:$expected_account" '
+jq -e \
+  --arg operator "user:$expected_account" \
+  --arg ksa "serviceAccount:$PROJECT_ID.svc.id.goog[currency-observability/currency-grafana]" '
   ([
     .bindings[]?
     | select(.role == "roles/iam.serviceAccountTokenCreator")
@@ -394,10 +411,15 @@ jq -e --arg operator "user:$expected_account" '
   ] | sort) == [$operator]
   and ([
     .bindings[]?
-    | select(.role != "roles/iam.serviceAccountTokenCreator")
-  ] | length == 0)
+    | select(.role == "roles/iam.workloadIdentityUser")
+    | .members[]?
+  ] | sort) == [$ksa]
+  and ([.bindings[]? | select(
+    .role != "roles/iam.serviceAccountTokenCreator"
+    and .role != "roles/iam.workloadIdentityUser"
+  )] | length == 0)
 ' <<<"$grafana_service_account_policy" >/dev/null || {
-  printf 'Grafana token minting is not restricted to the assessment operator.\n' >&2
+  printf 'Grafana access is not restricted to the operator and exact evidence Kubernetes service account.\n' >&2
   exit 1
 }
 
@@ -429,6 +451,25 @@ jq -e \
   and ([.bindings[]? | select(.role != "roles/iam.workloadIdentityUser")] | length == 0)
 ' <<<"$app_a_caller_policy" >/dev/null || {
   printf 'App A caller impersonation is not restricted to its exact Kubernetes service account.\n' >&2
+  exit 1
+}
+
+app_b_telemetry_policy="$(
+  gcloud --configuration="$GCLOUD_CONFIGURATION" \
+    iam service-accounts get-iam-policy "$app_b_telemetry_sa" \
+    --project="$PROJECT_ID" \
+    --format=json
+)"
+jq -e \
+  --arg ksa "serviceAccount:$PROJECT_ID.svc.id.goog[currency-app-b/app-b-engine]" '
+  ([
+    .bindings[]?
+    | select(.role == "roles/iam.workloadIdentityUser")
+    | .members[]?
+  ] | sort) == [$ksa]
+  and ([.bindings[]? | select(.role != "roles/iam.workloadIdentityUser")] | length == 0)
+' <<<"$app_b_telemetry_policy" >/dev/null || {
+  printf 'App B telemetry impersonation is not restricted to its exact Kubernetes service account.\n' >&2
   exit 1
 }
 
@@ -504,6 +545,7 @@ verify_no_user_keys() {
 
 for account in \
   "$node_usc1" "$node_use4" "$build_sa" "$grafana_sa" "$app_a_caller_sa" \
+  "$app_b_telemetry_sa" \
   "$app_a_deployer_sa" "$app_b_deployer_sa"; do
   verify_no_user_keys "$account" || {
     printf 'User-managed key found on %s.\n' "$account" >&2

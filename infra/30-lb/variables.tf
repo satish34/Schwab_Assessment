@@ -9,7 +9,7 @@ variable "project_id" {
 }
 
 variable "enable_cloud_armor" {
-  description = "Create and attach the opt-in Cloud Armor policy and enable full backend request logging."
+  description = "Create and attach the opt-in Cloud Armor policy; its evidence mode raises backend request logging from 5% to 100%."
   type        = bool
   default     = false
 }

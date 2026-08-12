@@ -21,6 +21,7 @@ public static class ExchangeRatesEndpoint
             context.RequestAborted);
         if (!authentication.Succeeded)
         {
+            AppBTracing.SuppressCurrentTrace();
             logger.WriteRequest(
                 "WARNING",
                 "caller authentication rejected",

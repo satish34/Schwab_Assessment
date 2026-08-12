@@ -1,3 +1,4 @@
 package com.schwab.exchange.gateway.telemetry;
 
-public record TraceResolution(TraceContext context, boolean correlationIdValid) {}
+public record TraceResolution(
+    TraceContext context, boolean correlationIdValid, boolean remoteParent) {}

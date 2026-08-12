@@ -5,7 +5,9 @@ locals {
     "billingbudgets.googleapis.com",
     "cloudbuild.googleapis.com",
     "cloudbilling.googleapis.com",
+    "cloudprofiler.googleapis.com",
     "cloudquotas.googleapis.com",
+    "cloudtrace.googleapis.com",
     "clouderrorreporting.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",
@@ -16,6 +18,7 @@ locals {
     "monitoring.googleapis.com",
     "serviceusage.googleapis.com",
     "storage.googleapis.com",
+    "telemetry.googleapis.com",
   ])
 
   tls_services = trimspace(var.domain_name) == "" ? toset([]) : toset([

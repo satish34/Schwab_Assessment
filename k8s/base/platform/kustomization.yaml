@@ -9,6 +9,7 @@ resources:
   - app-a-service.yaml
   - app-b-serviceaccount.yaml
   - app-b-service.yaml
+  - grafana-serviceaccount.yaml
   - fault-config.yaml
 configMapGenerator:
   - name: runtime-config

@@ -114,22 +114,29 @@ for region in us-central1 us-east4; do
   require_overlay_zone \
     "k8s/overlays/$region/app-a/kustomization.yaml" app-a-gateway-c "${expected_zones[2]}"
 
-  require_regex_count "$platform" 2 '^kind: Namespace$'
+  require_regex_count "$platform" 3 '^kind: Namespace$'
   require_regex_count "$platform" 3 '^kind: ConfigMap$'
-  require_regex_count "$platform" 4 '^kind: NetworkPolicy$'
-  require_regex_count "$platform" 2 '^kind: ResourceQuota$'
+  require_regex_count "$platform" 5 '^kind: NetworkPolicy$'
+  require_regex_count "$platform" 3 '^kind: ResourceQuota$'
   require_regex_count "$platform" 2 '^kind: Role$'
   require_regex_count "$platform" 2 '^kind: RoleBinding$'
   require_regex_count "$platform" 2 '^kind: Service$'
-  require_regex_count "$platform" 2 '^kind: ServiceAccount$'
+  require_regex_count "$platform" 3 '^kind: ServiceAccount$'
   require_regex_count "$platform" 4 '^  SERVICE_(REGION|CLUSTER):'
   require_fixed_count "$platform" 0 'SERVICE_VERSION'
   for mode in enforce audit warn; do
     require_fixed_count \
-      "$platform" 2 "pod-security.kubernetes.io/$mode: restricted"
+      "$platform" 3 "pod-security.kubernetes.io/$mode: restricted"
   done
   require_fixed_count \
     "$platform" 1 "iam.gke.io/gcp-service-account: currency-app-a-caller@$project_id.iam.gserviceaccount.com"
+  require_fixed_count \
+    "$platform" 1 "iam.gke.io/gcp-service-account: currency-app-b-telemetry@$project_id.iam.gserviceaccount.com"
+  require_fixed_count \
+    "$platform" 1 "iam.gke.io/gcp-service-account: grafana-reader@$project_id.iam.gserviceaccount.com"
+  require_fixed_count "$platform" 2 'name: currency-observability'
+  require_fixed_count "$platform" 1 'name: currency-grafana'
+  require_fixed_count "$platform" 1 'name: evidence-capacity'
   require_fixed_count \
     "$platform" 1 "name: currency-app-a-deployer@$project_id.iam.gserviceaccount.com"
   require_fixed_count \
@@ -152,6 +159,11 @@ for region in us-central1 us-east4; do
   require_fixed_count "$app_a" 3 'name: APP_B_TOKEN_AUDIENCE'
   require_fixed_count \
     "$app_a" 3 'value: https://app-b-engine.schwab-assessment.internal'
+  require_fixed_count "$app_a" 3 'name: OTEL_TRACING_ENABLED'
+  require_fixed_count "$app_a" 6 'value: "true"'
+  require_fixed_count "$app_a" 3 'name: OTEL_TRACES_SAMPLER_ARG'
+  require_fixed_count "$app_a" 3 'value: "0.1"'
+  require_fixed_count "$app_a" 3 'name: CLOUD_PROFILER_ENABLED'
   require_regex_count "$app_a" 3 '^        topology.kubernetes.io/zone: '
   for zone in "${expected_zones[@]}"; do
     require_fixed_count "$app_a" 1 "topology.kubernetes.io/zone: $zone"
@@ -167,6 +179,13 @@ for region in us-central1 us-east4; do
   require_fixed_count "$app_b" 1 'name: APP_A_IDENTITY_EMAIL'
   require_fixed_count \
     "$app_b" 1 "value: currency-app-a-caller@$project_id.iam.gserviceaccount.com"
+  require_fixed_count "$app_b" 1 'name: OTEL_TRACES_EXPORTER'
+  require_fixed_count "$app_b" 1 'value: otlp'
+  require_fixed_count "$app_b" 1 'name: OTEL_EXPORTER_OTLP_ENDPOINT'
+  require_fixed_count \
+    "$app_b" 1 'value: https://telemetry.googleapis.com/v1/traces'
+  require_fixed_count "$app_b" 1 'name: OTEL_EXPORTER_OTLP_PROTOCOL'
+  require_fixed_count "$app_b" 1 'value: http/protobuf'
 
   require_fixed_count \
     "$aggregate" 3 "image: us-central1-docker.pkg.dev/$project_id/risk/app-a:$fixture_sha"
@@ -174,7 +193,7 @@ for region in us-central1 us-east4; do
     "$aggregate" 1 "image: us-central1-docker.pkg.dev/$project_id/risk/app-b:$fixture_sha"
   require_fixed_count "$aggregate" 4 'name: SERVICE_VERSION'
   require_fixed_count "$aggregate" 4 "value: $fixture_sha"
-  require_regex_count "$aggregate" 29 '^kind: '
+  require_regex_count "$aggregate" 33 '^kind: '
 
   printf 'Verified independent and aggregate Kubernetes contracts for %s.\n' "$region"
 done

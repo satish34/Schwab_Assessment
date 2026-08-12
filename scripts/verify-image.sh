@@ -11,12 +11,17 @@ fi
 
 image_name="$1"
 case "$image_name" in
-  app-a | app-b) ;;
+  app-a | app-b | grafana-evidence) ;;
   *)
-    printf 'APP_NAME must be app-a or app-b.\n' >&2
+    printf 'APP_NAME must be app-a, app-b, or grafana-evidence.\n' >&2
     exit 2
     ;;
 esac
+
+if [[ "$image_name" == "grafana-evidence" && ($# -ne 2 || -z "${2:-}") ]]; then
+  printf 'grafana-evidence verification requires one explicit full Git SHA.\n' >&2
+  exit 2
+fi
 
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${GCLOUD_CONFIGURATION:?GCLOUD_CONFIGURATION is required}"
@@ -46,6 +51,28 @@ done
   exit 1
 }
 
+for override_name in \
+  CLOUDSDK_AUTH_ACCESS_TOKEN CLOUDSDK_AUTH_ACCESS_TOKEN_FILE \
+  CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT \
+  GOOGLE_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_KEYFILE_JSON \
+  GOOGLE_CREDENTIALS GOOGLE_IMPERSONATE_SERVICE_ACCOUNT GOOGLE_OAUTH_ACCESS_TOKEN; do
+  [[ -z "${!override_name:-}" ]] || {
+    printf '%s must be unset.\n' "$override_name" >&2
+    exit 1
+  }
+done
+
+for auth_property in \
+  auth/access_token_file auth/credential_file_override \
+  auth/impersonate_service_account; do
+  auth_value="$(gcloud --configuration="$GCLOUD_CONFIGURATION" \
+    config get-value "$auth_property" 2>/dev/null)"
+  [[ -z "$auth_value" || "$auth_value" == "(unset)" ]] || {
+    printf '%s must be unset in the named gcloud configuration.\n' \
+      "$auth_property" >&2
+    exit 1
+  }
+done
 active_account="$(
   gcloud --configuration="$GCLOUD_CONFIGURATION" config get-value account 2>/dev/null
 )"

@@ -15,7 +15,9 @@ same change.
 - Cell failover: App A's background exchange-rate probe controls cached
   `/health/cell` state. Kubernetes readiness never depends on App B.
 - Observability: Cloud Logging to partitioned BigQuery for application panels;
-  Cloud Monitoring for restart and utilization panels.
+  Cloud Monitoring for restart and utilization panels; direct sampled trace
+  export; Java App A profiling; and a separate bounded platform-log dataset.
+  Every deployed release must prove its own active subset with fresh evidence.
 - Optional edge security: Cloud Armor rate limiting and preview-only OWASP
   SQLi/XSS rules are created only when `ENABLE_CLOUD_ARMOR=1`; live value `0`.
 - Optional supply chain: Binary Authorization enforcement is created only when
@@ -41,10 +43,13 @@ GCP foundation.
 | Artifact Registry | `us-central1-docker.pkg.dev/PROJECT_ID/risk` |
 | BigQuery dataset | `risk_logs` in `US` |
 | Expected BigQuery log table | `stdout`, verified after first export |
+| Platform log dataset | `currency_platform_logs` in `US` |
 | Backend service | `risk-app-a-gateway-backend` |
 | Global address | `risk-global-ip` |
 | Cluster node service accounts | `risk-gke-usc1-nodes`, `risk-gke-use4-nodes` |
 | App A caller service account | `currency-app-a-caller` |
+| App B telemetry service account | `currency-app-b-telemetry` |
+| Grafana reader service account | `grafana-reader` |
 | App A deployer identity | `currency-app-a-deployer` |
 | App B deployer identity | `currency-app-b-deployer` |
 | Developer production identity | none; Dev access stops at repository review and lower environments |
@@ -103,6 +108,12 @@ APP_B_TOKEN_AUDIENCE=https://app-b-engine.schwab-assessment.internal
 APP_A_IDENTITY_EMAIL=currency-app-a-caller@PROJECT_ID.iam.gserviceaccount.com  # App B only
 FAULT_CONFIG_PATH=/etc/app-b-faults/faults.json  # App B only
 GOOGLE_CLOUD_PROJECT=PROJECT_ID                 # deployed apps
+OTEL_TRACING_ENABLED=true                       # App A
+OTEL_TRACES_SAMPLER_ARG=0.1                     # App A
+CLOUD_PROFILER_ENABLED=true                     # App A
+OTEL_TRACES_EXPORTER=otlp                       # App B
+OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.googleapis.com/v1/traces  # App B
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf       # App B
 ```
 
 Docker Compose may override only the host portion of `APP_B_BASE_URL`; port
@@ -205,6 +216,17 @@ The internal hop remains HTTP. The signed token authenticates App A but does
 not encrypt traffic or prevent replay of a captured token before expiry;
 ClusterIP isolation and ingress NetworkPolicy reduce exposure. Production
 would add mTLS for confidentiality and stronger replay resistance.
+
+The App A identity receives only
+`roles/telemetry.tracesWriter`, `roles/serviceusage.serviceUsageConsumer`, and
+`roles/cloudprofiler.agent`. App B uses its own
+`currency-app-b-telemetry` identity with the first two trace-export roles.
+Both mappings are exact KSA-to-GSA Workload Identity bindings; no key is stored.
+App A makes a 10% sampling decision for root and remote-parent requests and
+does not trust a caller-supplied sampled flag. App B continues that W3C
+decision. Public App A server, App A client, and private App B server spans
+must form one three-span parent chain. Probes and rejected authentication
+requests do not export spans. Export is asynchronous and request-safe.
 
 ## Browser UI
 
@@ -359,12 +381,28 @@ Developers have no production-like GCP or Kubernetes identity; changes enter
 through repository review, testing, and lower environments. The two deployers
 use short-lived impersonation; no key is created.
 
-The two app pipelines use separate kubeconfig and work directories and may run
-concurrently for backward-compatible contracts. Breaking API changes require
-an expand-contract release. The clusters, project, VPC, edge, build identity,
+The two app pipelines use separate kubeconfig and work directories. Each direct
+lane runs independently with a pair compatibility gate. For simultaneous
+backward-compatible changes, the coordinated deploy script defers lane gates,
+runs both lanes concurrently, then executes one aggregate gate; two arbitrary
+direct invocations are not supported. Breaking API changes require an
+expand-contract release. The clusters, project, VPC, edge, build identity,
 Artifact Registry repository, and observability stack remain shared platform
 boundaries. This is trusted enterprise multi-tenancy, not hostile-tenant
 isolation.
+
+The platform layer defines `currency-observability` with restricted
+Pod Security, default-deny ingress, no app-team RBAC, and a quota of one Pod and
+one Job. The quota fixes requests at 250m CPU, 512Mi memory, and 256Mi ephemeral
+storage, with limits of 500m, 768Mi, and 640Mi; data/tmp `emptyDir` volumes are
+capped at 512Mi/128Mi. Services, Secrets, and persistent volume claims are
+forbidden. Its `currency-grafana` KSA maps keylessly to the read-only
+`grafana-reader` GSA.
+The Grafana build requires an explicit full-SHA `GRAFANA_IMAGE_TAG`, bakes the
+checksum-pinned BigQuery plugin into its scanned Artifact Registry image, and
+publishes no `latest` tag. The GKE launcher resolves that tag to one digest and
+renders a digest-only manifest; the Job downloads neither a plugin nor a Docker
+Hub image at runtime.
 
 Rollout success does not mean zero-downtime regional failover. The failover
 gate permits failures only inside the measured convergence window and requires
@@ -392,13 +430,17 @@ health timeout        = 2 seconds
 unhealthy threshold   = 2
 healthy threshold     = 3
 health logging        = enabled
-backend request logs  = sample rate 1.0 only when ENABLE_CLOUD_ARMOR=1
+backend request logs  = pending sample rate 0.05; 1.0 when ENABLE_CLOUD_ARMOR=1
 ```
 
 The `protocol = HTTP` value is the private load-balancer-to-Pod backend
 protocol. It does not configure a public HTTP frontend. A no-domain bootstrap may
 temporarily use port 80, but enabling the trusted domain removes that forwarding
 rule and its target HTTP proxy rather than redirecting it.
+
+The live backend predates the pending request-log setting. The `0.05` normal
+sample and `1.0` Armor sample take effect only after the reviewed `30-lb`
+in-place apply.
 
 When `ENABLE_CLOUD_ARMOR=1`, Cloud Armor uses these frozen rules. The default
 and current live value is `0`, so no policy is attached and no denial is
@@ -421,13 +463,14 @@ failover gate. The evidence exercise sends a bounded burst above 120 but below
 When `ENABLE_BINARY_AUTHORIZATION=1`, both Autopilot clusters use
 `PROJECT_SINGLETON_POLICY_ENFORCE`. The project policy enables Google's
 maintained system-image policy, exempts only the exact Artifact Registry image
-paths `risk/app-a` and `risk/app-b`, and enforces `ALWAYS_DENY` for everything
-else. One guarded live Pod create request for `docker.io/library/nginx:1.27.5`
+paths `risk/app-a`, `risk/app-b`, and `risk/grafana-evidence`, and enforces
+`ALWAYS_DENY` for everything else. One guarded live Pod create request for
+`docker.io/library/nginx:1.27.5`
 must be denied and must not persist a Pod. The default and current live value
 is `0`, so cluster enforcement and the denial exercise are disabled.
 
 This is repository allowlisting, not signed build attestation: anyone who can
-push to those two protected repository paths could deploy an image. Artifact
+push to those three protected repository paths could deploy an image. Artifact
 Registry writer access therefore remains limited to the build service account.
 GKE evaluates this policy on future Pod create/update requests; it does not
 evict existing Pods and is documented to fail open during service or quota
@@ -443,6 +486,19 @@ hard-fail guarantee.
   `00-bootstrap -> 10-global -> 20-cluster -> Kubernetes Services/NEGs -> 30-lb`.
 - `30-lb` is forbidden until both Services report NEG status and all six NEGs
   exist.
+- `00-bootstrap`, `10-global`, and `30-lb` plans write one ignored exact binary
+  plus metadata bound for 30 minutes to project, operator, commit, stack source,
+  Terraform context, and plan hash. Their applies consume that same plan and
+  reject missing, stale, changed, delete, or replacement scope.
+- `20-cluster` is different: its plan target is a human preview; apply creates a
+  fresh internal plan and accepts only the narrower cluster contract.
+- The existing live project requires the retained four local states. A clean
+  clone may target only a separately reviewed project/contract port; any
+  populated project requires complete state adoption, and a retained quota
+  preference must be imported before the `00-bootstrap` plan.
+- Guarded cloud/Terraform entry points reject alternate access-token,
+  credential-file, ADC, and impersonation overrides before using the exact
+  configured operator identity.
 - Destroy order:
   `30-lb -> App A Services -> NEG garbage collection -> 20-cluster -> 10-global -> 00-bootstrap -> orphan check`.
 
@@ -476,4 +532,28 @@ hard-fail guarantee.
 15-cloud-armor.txt
 16-binary-authorization.txt
 17-team-isolation.txt
+18-release-manifest.txt
+19-cloud-observability.txt
+20-platform-observability.txt
+21-gke-grafana.txt
 ```
+
+`18` binds both image versions and the public endpoint to one deployed release
+SHA, records the clean documentation HEAD separately, and requires that the
+release is that HEAD or its ancestor. Regenerate it after a documentation-only
+commit without relabeling the deployed release.
+`19` is sanitized
+Cloud Trace/Profiler CLI proof, including the exact three-span parent chain and
+profile metadata only. `20` proves the bounded platform configuration, fresh
+Logging/Monitoring signals, and at least one fresh partition-pruned BigQuery
+sink row under a 100 MiB query cap. `21` proves the private GKE Grafana runtime,
+signed pinned plugin, healthy keyless data sources, and real data in all four
+panels. The browser-captured `08-grafana.png` remains a separate manual visual
+step because shell automation must not silently substitute a rendered image for
+human review.
+
+Generate `18`–`21` only after the corresponding immutable release is live. Each text
+artifact is written through an ignored temporary file and replaces retained
+evidence only after its gate passes and a token-pattern scan succeeds. Start
+Grafana, capture `08-grafana.png` from its loopback-only URL, verify it, and
+always run cleanup; neither the Job nor its port-forward is standing evidence.

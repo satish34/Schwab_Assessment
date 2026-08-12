@@ -26,14 +26,17 @@ public class ExchangeRateRequestContextFilter extends OncePerRequestFilter {
       new ErrorResponse("VALIDATION_ERROR", "Request validation failed");
 
   private final TraceContextResolver traceContextResolver;
+  private final DistributedTracing distributedTracing;
   private final StructuredLogger structuredLogger;
   private final ObjectMapper objectMapper;
 
   public ExchangeRateRequestContextFilter(
       TraceContextResolver traceContextResolver,
+      DistributedTracing distributedTracing,
       StructuredLogger structuredLogger,
       ObjectMapper objectMapper) {
     this.traceContextResolver = traceContextResolver;
+    this.distributedTracing = distributedTracing;
     this.structuredLogger = structuredLogger;
     this.objectMapper = objectMapper;
   }
@@ -50,33 +53,43 @@ public class ExchangeRateRequestContextFilter extends OncePerRequestFilter {
     long startedAt = System.nanoTime();
     TraceResolution resolution =
         traceContextResolver.resolve(
-            request.getHeader("x-correlation-id"), request.getHeader("traceparent"));
-    RequestTelemetry telemetry = new RequestTelemetry(resolution.context());
-    request.setAttribute(RequestTelemetry.ATTRIBUTE, telemetry);
-    response.setHeader("x-correlation-id", resolution.context().correlationId());
-    response.setHeader("x-trace-id", resolution.context().traceId());
-    response.setHeader("traceparent", resolution.context().traceparent());
-    response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+            request.getHeader("x-correlation-id"),
+            request.getHeader("traceparent"),
+            request.getHeader("tracestate"));
 
-    try {
-      if (!acceptsJson(request)
-          || ("GET".equalsIgnoreCase(request.getMethod()) && hasInput(request))
-          || !resolution.correlationIdValid()) {
-        telemetry.markFailure("validation_error", 0, null);
-        writeValidationError(response);
-        return;
+    try (DistributedTracing.TraceSpan serverSpan =
+        distributedTracing.startServerSpan(resolution, request.getMethod(), API_PATH)) {
+      RequestTelemetry telemetry = new RequestTelemetry(serverSpan.traceContext());
+      request.setAttribute(RequestTelemetry.ATTRIBUTE, telemetry);
+      response.setHeader("x-correlation-id", serverSpan.traceContext().correlationId());
+      response.setHeader("x-trace-id", serverSpan.traceContext().traceId());
+      response.setHeader("traceparent", serverSpan.traceContext().traceparent());
+      if (!serverSpan.traceContext().traceState().isBlank()) {
+        response.setHeader("tracestate", serverSpan.traceContext().traceState());
       }
+      response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
 
-      filterChain.doFilter(request, response);
-    } catch (IOException | ServletException | RuntimeException exception) {
-      telemetry.markFailure("internal_error", telemetry.downstreamLatencyMs(), exception);
-      if (!response.isCommitted()) {
-        response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+      try {
+        if (!acceptsJson(request)
+            || ("GET".equalsIgnoreCase(request.getMethod()) && hasInput(request))
+            || !resolution.correlationIdValid()) {
+          telemetry.markFailure("validation_error", 0, null);
+          writeValidationError(response);
+          return;
+        }
+
+        filterChain.doFilter(request, response);
+      } catch (IOException | ServletException | RuntimeException exception) {
+        telemetry.markFailure("internal_error", telemetry.downstreamLatencyMs(), exception);
+        if (!response.isCommitted()) {
+          response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+        }
+        throw exception;
+      } finally {
+        serverSpan.complete(response.getStatus(), telemetry.errorType());
+        structuredLogger.request(
+            telemetry, response.getStatus(), elapsedMillis(startedAt), request.getMethod());
       }
-      throw exception;
-    } finally {
-      structuredLogger.request(
-          telemetry, response.getStatus(), elapsedMillis(startedAt), request.getMethod());
     }
   }
 

@@ -18,21 +18,31 @@ authorization boundary.
 
 Only `currency-app-a/app-a-gateway` may impersonate
 `currency-app-a-caller`, through `roles/iam.workloadIdentityUser`; this runtime
-identity has no project role. Both apps still share the build identity and
+identity has no service-management or resource-management write role. The
+observability configuration grants it trace-writer, service-consumer, and
+Profiler-agent roles; maps App B to a trace-only `currency-app-b-telemetry`
+identity; and maps the Grafana evidence KSA to `grafana-reader`. All three
+bindings are exact and keyless. Both apps still share the build identity and
 Artifact Registry repository, so deployment isolation—not build
 isolation—is claimed. That shared supply-chain boundary is a remaining
 cross-team blast radius; production would split the builders and repositories.
+
+The same configuration creates a separate 30-day `currency_platform_logs`
+dataset and sink for bounded GKE, node, load-balancer, VPC, firewall, and
+health-check records. It enables 5% one-minute VPC Flow Logs with metadata
+excluded. Plan gates reject unexpected resource changes and any delete or
+replacement.
 
 The private Cloud Build source bucket expires source archives after seven
 days. This stack also removes the unused default VPC and strips Editor from
 default service accounts.
 
 When `ENABLE_BINARY_AUTHORIZATION=1`, it owns the project policy:
-Google-managed system images and only the exact `risk/app-a` and `risk/app-b`
-repository paths are allowed; the default rule denies everything else. This is
-path allowlisting, not signed build attestation. GKE documents fail-open
-behavior during service or quota failure. The live/default flag is `0`, so no
-project policy is created.
+Google-managed system images and only the exact `risk/app-a`, `risk/app-b`, and
+`risk/grafana-evidence` repository paths are allowed; the default rule denies
+everything else. This is path allowlisting, not signed build attestation. GKE
+documents fail-open behavior during service or quota failure. The live/default
+flag is `0`, so no project policy is created.
 
 The existing project is imported with `auto_create_network = false`. Because
 the provider only removes the default VPC while creating a project, a one-time
@@ -42,8 +52,14 @@ The project deletion policy is `ABANDON`, so this stack cannot delete it.
 Destroying the stack does remove the exported-log dataset after evidence is
 saved.
 
-Run this after `00-bootstrap` through the root `make global` command. The apply
-gate must confirm the sink's returned writer identity has
+That configuration import adopts only `google_project.current`; it is not a
+general takeover of a populated project. A new deployment should use a
+separate empty project. A populated project requires complete reviewed
+resource/state adoption and is intentionally outside the clean-project path.
+
+Run this after `00-bootstrap` through `make global-plan`, review the exact
+saved plan, then consume it within 30 minutes with `TF_AUTO_APPROVE=1 make
+global`. The apply gate must confirm the sink's returned writer identity has
 `roles/bigquery.dataEditor` on only `risk_logs`.
 
 An empty `domain_name` is only a temporary bootstrap or recovery mode. The

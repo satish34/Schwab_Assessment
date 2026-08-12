@@ -11,16 +11,29 @@ class TraceContextResolverTest {
   private static final String TRACEPARENT =
       "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
-  private final TraceContextResolver resolver = new TraceContextResolver();
+  private final TraceContextResolver resolver = new TraceContextResolver(() -> true);
 
   @Test
-  void preservesValidCorrelationAndTraceHeaders() {
+  void preservesValidCorrelationAndTraceIdentifiersWithAServerSamplingDecision() {
     TraceResolution resolution = resolver.resolve(CORRELATION_ID, TRACEPARENT);
 
     assertThat(resolution.correlationIdValid()).isTrue();
+    assertThat(resolution.remoteParent()).isTrue();
     assertThat(resolution.context().correlationId()).isEqualTo(CORRELATION_ID);
     assertThat(resolution.context().traceId()).isEqualTo("4bf92f3577b34da6a3ce929d0e0e4736");
     assertThat(resolution.context().traceparent()).isEqualTo(TRACEPARENT);
+  }
+
+  @Test
+  void publicCallerCannotForceSamplingWithTheIncomingTraceFlag() {
+    TraceContextResolver rejectingSampler = new TraceContextResolver(() -> false);
+
+    TraceResolution resolution = rejectingSampler.resolve(CORRELATION_ID, TRACEPARENT);
+
+    assertThat(resolution.remoteParent()).isTrue();
+    assertThat(resolution.context().traceId()).isEqualTo("4bf92f3577b34da6a3ce929d0e0e4736");
+    assertThat(resolution.context().traceparent())
+        .isEqualTo("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00");
   }
 
   @Test
@@ -28,6 +41,7 @@ class TraceContextResolverTest {
     TraceResolution resolution = resolver.resolve(null, null);
 
     assertThat(resolution.correlationIdValid()).isTrue();
+    assertThat(resolution.remoteParent()).isFalse();
     assertThat(UUID.fromString(resolution.context().correlationId()).toString())
         .isEqualTo(resolution.context().correlationId());
     assertThat(resolution.context().traceId()).matches("[0-9a-f]{32}");
@@ -40,8 +54,24 @@ class TraceContextResolverTest {
         resolver.resolve("not-a-uuid", "00-00000000000000000000000000000000-0000000000000000-01");
 
     assertThat(resolution.correlationIdValid()).isFalse();
+    assertThat(resolution.remoteParent()).isFalse();
     assertThat(UUID.fromString(resolution.context().correlationId())).isNotNull();
     assertThat(resolution.context().traceId()).matches("[0-9a-f]{32}");
     assertThat(resolution.context().traceId()).isNotEqualTo("00000000000000000000000000000000");
+  }
+
+  @Test
+  void preservesValidW3cTraceState() {
+    TraceResolution resolution =
+        resolver.resolve(CORRELATION_ID, TRACEPARENT, "vendor=value,other=opaque");
+
+    assertThat(resolution.context().traceState()).isEqualTo("vendor=value,other=opaque");
+  }
+
+  @Test
+  void generatesAnUnsampledProbeContext() {
+    TraceContext context = resolver.newUnsampledTrace(CORRELATION_ID);
+
+    assertThat(context.traceparent()).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-00");
   }
 }

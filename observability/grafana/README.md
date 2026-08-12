@@ -1,7 +1,13 @@
 # Grafana dashboard
 
-`currency-dashboard.json` uses BigQuery for App A errors and latency, and Cloud
-Monitoring for restarts and utilization. Every query separates the two cells.
+`currency-dashboard.json` contains exactly the four assignment panels:
+
+1. BigQuery application error rates over time.
+2. Pod restart counts grouped and labeled by Kubernetes namespace.
+3. Request latency percentiles (p50, p95, and p99) from BigQuery.
+4. CPU and memory resource-utilization trends from Cloud Monitoring.
+
+Cell and service labels remain on the series for troubleshooting context.
 `risk_logs` remains because it is the existing BigQuery dataset identifier.
 Cloud Monitoring queries include both `currency-app-a` and `currency-app-b`
 namespaces.
@@ -25,7 +31,7 @@ credentials:
 bash scripts/verify-grafana.sh --static
 ```
 
-For a bounded local proof, start the digest-pinned loopback runtime:
+The existing `8af2f2d...` evidence used this bounded local proof:
 
 ```bash
 bash scripts/local-grafana-evidence.sh start
@@ -49,3 +55,39 @@ health endpoints, the imported dashboard, and every panel query:
 ```bash
 make verify-grafana
 ```
+
+The GKE evidence path bakes the checksum-pinned official BigQuery plugin 3.2.0
+archive into a scanned Artifact Registry image. Build it from a clean commit
+using an explicit full SHA:
+
+```bash
+RELEASE_SHA="$(git rev-parse HEAD)"
+make build-grafana GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+```
+
+The one-hour Job in `currency-observability` resolves that tag to one immutable
+digest before rendering the manifest. It performs no runtime plugin or Docker
+Hub download and has no Service, Ingress, Secret, or persistent volume. A
+dedicated keyless KSA/GSA reads the data, and the operator reaches it only
+through a loopback port-forward:
+
+```bash
+make gke-grafana GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+make gke-grafana-status GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+make cleanup-gke-grafana GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+```
+
+For final release evidence, use the phased wrappers instead:
+
+```bash
+make capture-observability-grafana-start GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+# Save evidence/08-grafana.png from the printed loopback URL.
+make capture-observability-grafana-verify GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+make capture-observability-grafana-cleanup GRAFANA_IMAGE_TAG="$RELEASE_SHA"
+```
+
+The verifier text is saved only after a complete pass; the screenshot remains
+an explicit operator step.
+
+Treat this path as live only after the GKE runtime gate and screenshot are
+captured for the same immutable SHA.

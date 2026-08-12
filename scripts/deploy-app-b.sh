@@ -262,6 +262,8 @@ render_release() {
     && [[ "$(grep -Fc -- "value: $version" "$output")" == "1" ]] \
     && [[ "$(grep -Fc -- 'value: google-id-token' "$output")" == "1" ]] \
     && [[ "$(grep -Fc -- "value: currency-app-a-caller@$PROJECT_ID.iam.gserviceaccount.com" "$output")" == "1" ]] \
+    && [[ "$(grep -Fc -- 'value: https://telemetry.googleapis.com/v1/traces' "$output")" == "1" ]] \
+    && [[ "$(grep -Fc -- 'value: http/protobuf' "$output")" == "1" ]] \
     && ! grep -Fq -- 'value: disabled' "$output" \
     || fail "$region App B render lost its immutable version or caller authentication"
 }
@@ -303,6 +305,9 @@ verify_app_b() {
     env("APP_B_AUTH_MODE"; "google-id-token") and
     env("APP_B_TOKEN_AUDIENCE"; $audience) and
     env("APP_A_IDENTITY_EMAIL"; $caller) and
+    env("OTEL_TRACES_EXPORTER"; "otlp") and
+    env("OTEL_EXPORTER_OTLP_ENDPOINT"; "https://telemetry.googleapis.com/v1/traces") and
+    env("OTEL_EXPORTER_OTLP_PROTOCOL"; "http/protobuf") and
     (.spec.template.spec.serviceAccountName == "app-b-engine")
   ' <<<"$deployment_json" >/dev/null || fail "$context App B did not reconcile to $target_sha"
 }
