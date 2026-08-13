@@ -1,0 +1,113 @@
+{
+  "tableReference": {
+    "datasetId": "risk_logs",
+    "projectId": "schwab-assessment-gke",
+    "tableId": "stdout"
+  },
+  "location": "US",
+  "timePartitioning": {
+    "field": "timestamp",
+    "type": "DAY"
+  },
+  "schema": {
+    "fields": [
+      {
+        "name": "jsonPayload",
+        "type": "RECORD",
+        "mode": "NULLABLE",
+        "fields": [
+          {
+            "name": "cluster",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "correlation_id",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "decision",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "downstream_latency_ms",
+            "type": "FLOAT",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "error_type",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "is_test",
+            "type": "BOOLEAN",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "latency_ms",
+            "type": "FLOAT",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "log_type",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "message",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "method",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "region",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "route",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "service",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "service_version",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "stack_trace",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "status_code",
+            "type": "FLOAT",
+            "mode": "NULLABLE"
+          },
+          {
+            "name": "trace_id",
+            "type": "STRING",
+            "mode": "NULLABLE"
+          }
+        ]
+      },
+      {
+        "name": "timestamp",
+        "type": "TIMESTAMP",
+        "mode": "NULLABLE"
+      }
+    ]
+  }
+}
