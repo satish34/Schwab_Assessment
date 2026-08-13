@@ -380,8 +380,8 @@ issue_authenticated_app_b_request() {
   [[ -n "$pod" ]] \
     || fail "$context has no ready App A Pod available for the authenticated App B probe"
 
-  # The identity token exists only in the in-Pod shell and curl process. The
-  # exec stream returns the App B status and body, never the bearer token.
+  # The identity token remains inside the Pod: the shell writes it only to a
+  # mode-0600 wget config and the exec stream returns only status and body.
   if ! exec_output="$(
       timeout --foreground --signal=INT --kill-after=5s 30s \
         kubectl --context="$context" --namespace="$app_a_namespace" \
@@ -395,21 +395,20 @@ issue_authenticated_app_b_request() {
             token=""
             umask 077
             body="$(mktemp /tmp/app-b-evidence.XXXXXX)"
+            headers="$(mktemp /tmp/app-b-headers.XXXXXX)"
+            auth_config="$(mktemp /tmp/app-b-wget.XXXXXX)"
             cleanup_probe() {
               token=""
-              rm -f -- "$body"
+              rm -f -- "$body" "$headers" "$auth_config"
             }
             trap cleanup_probe EXIT
             trap "cleanup_probe; exit 1" HUP INT TERM
 
+            encoded_audience="$(printf "%s" "$audience" | sed "s/:/%3A/g; s#/#%2F#g")"
             if ! token="$(
-              curl --fail --silent --show-error --noproxy "*" \
-                --proto "=http" --connect-timeout 2 --max-time 10 \
-                --retry 1 --retry-all-errors --retry-delay 0 \
-                --max-filesize 16384 --get "$metadata_url" \
-                --header "Metadata-Flavor: Google" \
-                --data-urlencode "audience=$audience" \
-                --data-urlencode "format=full"
+              timeout 15s wget --quiet --no-proxy --timeout=10 --tries=2 \
+                --header="Metadata-Flavor: Google" --output-document=- \
+                "$metadata_url?audience=$encoded_audience&format=full"
             )"; then
               exit 70
             fi
@@ -422,22 +421,25 @@ issue_authenticated_app_b_request() {
             esac
             [ "${#token}" -le 16384 ] || exit 71
 
-            if ! status="$(
-              printf "header = \"Authorization: Bearer %s\"\n" "$token" \
-                | curl --silent --show-error --noproxy "*" \
-                  --config - --proto "=http" --connect-timeout 2 \
-                  --max-time 15 --max-filesize 1048576 --output "$body" \
-                  --write-out "%{http_code}" --request GET "$app_b_url" \
-                  --header "Accept: application/json" \
-                  --header "x-correlation-id: $correlation_id" \
-                  --header "traceparent: $traceparent"
-            )"; then
-              exit 72
-            fi
+            printf "header = Authorization: Bearer %s\n" "$token" >"$auth_config"
             token=""
+            set +e
+            timeout 20s wget --quiet --no-proxy --timeout=15 --tries=1 \
+              --config="$auth_config" --server-response --output-document="$body" \
+              --header="Accept: application/json" \
+              --header="x-correlation-id: $correlation_id" \
+              --header="traceparent: $traceparent" \
+              "$app_b_url" 2>"$headers"
+            wget_status=$?
+            set -e
+            status="$(sed -n "s/^[[:space:]]*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p" "$headers" | tail -n 1)"
             case "$status" in
               [0-9][0-9][0-9]) ;;
               *) exit 73 ;;
+            esac
+            case "$status:$wget_status" in
+              200:0 | 503:8) ;;
+              *) exit 72 ;;
             esac
             cat "$body"
             printf "\n%s\n" "$status"

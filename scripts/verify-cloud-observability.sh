@@ -170,7 +170,10 @@ random_hex() {
 
 headers="$(mktemp "$repo_root/.tmp/cloud-trace-headers.XXXXXX")"
 body="$(mktemp "$repo_root/.tmp/cloud-trace-body.XXXXXX")"
-git check-ignore --quiet -- "$headers" "$body" || fail "trace response files must be ignored"
+git check-ignore --quiet -- "$headers" \
+  || fail "trace response files must be ignored"
+git check-ignore --quiet -- "$body" \
+  || fail "trace response files must be ignored"
 trap 'rm -f -- "$headers" "$body"; cleanup' EXIT INT TERM
 sampled_trace_id=""
 saw_server_rejection=0

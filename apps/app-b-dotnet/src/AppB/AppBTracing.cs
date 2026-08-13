@@ -188,16 +188,31 @@ public sealed class GoogleApplicationDefaultAccessTokenProvider : IGoogleAccessT
 public sealed class GoogleAccessTokenHandler(
     IGoogleAccessTokenProvider tokenProvider) : DelegatingHandler
 {
+    protected override HttpResponseMessage Send(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        var requestUri = RequireRequestUri(request);
+        var accessToken = tokenProvider.GetAccessTokenAsync(
+            requestUri,
+            cancellationToken).ConfigureAwait(false).GetAwaiter().GetResult();
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        return base.Send(request, cancellationToken);
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        var requestUri = request.RequestUri ?? throw new InvalidOperationException(
-            "The OTLP export request must have a destination URI.");
+        var requestUri = RequireRequestUri(request);
         var accessToken = await tokenProvider.GetAccessTokenAsync(
             requestUri,
             cancellationToken);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         return await base.SendAsync(request, cancellationToken);
     }
+
+    private static Uri RequireRequestUri(HttpRequestMessage request) =>
+        request.RequestUri ?? throw new InvalidOperationException(
+            "The OTLP export request must have a destination URI.");
 }

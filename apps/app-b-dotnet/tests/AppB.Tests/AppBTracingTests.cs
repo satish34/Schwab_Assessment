@@ -94,6 +94,35 @@ public sealed class AppBTracingTests
     }
 
     [Fact]
+    public void SynchronousExportRequestsUseARefreshableBearerTokenWithoutChangingTheBody()
+    {
+        var tokenProvider = new StubAccessTokenProvider("workload-identity-access-token");
+        var destination = new CapturingHttpMessageHandler();
+        using var handler = new GoogleAccessTokenHandler(tokenProvider)
+        {
+            InnerHandler = destination,
+        };
+        using var client = new HttpClient(handler);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            AppBTracingSettings.TelemetryApiTraceEndpoint)
+        {
+            Content = new ByteArrayContent([1, 2, 3]),
+        };
+
+        using var response = client.Send(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, tokenProvider.CallCount);
+        Assert.Equal(
+            new Uri(AppBTracingSettings.TelemetryApiTraceEndpoint),
+            tokenProvider.LastRequestUri);
+        Assert.Equal("Bearer", destination.AuthorizationScheme);
+        Assert.Equal("workload-identity-access-token", destination.AuthorizationParameter);
+        Assert.Equal([1, 2, 3], destination.Body);
+    }
+
+    [Fact]
     public void W3cIdentifiersAreForcedBeforeRequestInstrumentationStarts()
     {
         var services = new ServiceCollection();
@@ -201,6 +230,19 @@ public sealed class AppBTracingTests
         public string? AuthorizationParameter { get; private set; }
 
         public byte[]? Body { get; private set; }
+
+        protected override HttpResponseMessage Send(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            AuthorizationScheme = request.Headers.Authorization?.Scheme;
+            AuthorizationParameter = request.Headers.Authorization?.Parameter;
+            Body = request.Content is null
+                ? null
+                : request.Content.ReadAsByteArrayAsync(cancellationToken)
+                    .ConfigureAwait(false).GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,

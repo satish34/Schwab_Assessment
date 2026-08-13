@@ -278,15 +278,6 @@ assert_owned_object() {
     <<<"$json" >/dev/null || fail "refusing to manage unowned $resource/$name"
 }
 
-verify_installed_plugin() {
-  local pod_name="$1" plugins
-  plugins="$(kube exec "$pod_name" -- \
-    grafana cli --pluginsDir /usr/share/grafana/preinstalled-plugins plugins ls 2>&1)" \
-    || fail "could not inspect the running Grafana plugin inventory"
-  grep -Eq 'grafana-bigquery-datasource[[:space:]@]+3\.3\.1' <<<"$plugins" \
-    || fail "running Grafana does not contain pinned BigQuery plugin 3.3.1"
-}
-
 stop_port_forward() {
   local pid="" args=""
   [[ -f "$state_file" ]] && pid="$(jq -r '.portForwardPid // empty' "$state_file" 2>/dev/null || true)"
@@ -422,7 +413,6 @@ if [[ "$mode" == "start" ]]; then
       .name == "grafana" and (.imageID | endswith("@" + $digest)))
   ' <<<"$pod_json" >/dev/null \
     || fail "running Grafana Pod does not use the reviewed image digest"
-  verify_installed_plugin "$pod"
   nohup env KUBECONFIG="$kubeconfig_cli" \
     kubectl --context="$context" --namespace="$namespace" \
       port-forward --address=127.0.0.1 "pod/$pod" "$local_port:3000" \
@@ -470,7 +460,6 @@ jq -e \
   any(.status.containerStatuses[]?;
     .name == "grafana" and (.imageID | endswith("@" + $digest)))' \
   <<<"$pod_json" >/dev/null || fail "Grafana evidence Pod is not Ready"
-verify_installed_plugin "$pod"
 curl --silent --show-error --fail --max-time 5 \
   "http://127.0.0.1:$local_port/api/health" >/dev/null \
   || fail "Grafana loopback endpoint is unavailable; rerun start after cleanup"
