@@ -13,11 +13,11 @@ query input is needed.
 
 ## Live status
 
-The evidence below describes the deployed App A/App B release
-`8af2f2de66d834a73f4339071b492676a667c069`. The repository also implements
-direct Cloud Trace export, Java Profiler, bounded platform logging, and a
-private GKE-hosted Grafana evidence job. Those capabilities require a matching
-immutable deployment and fresh evidence before they can be described as live.
+The live App A/App B release is
+`30fd8e9d60050f4b8cc93f25879883264a8ac30e`. Release-matched checks proved the
+public endpoint, cell-local authenticated calls, direct Cloud Trace export,
+Java Profiler, bounded platform logging, and a private GKE-hosted Grafana
+evidence session.
 
 - Project: `schwab-assessment-gke`
 - Public UI: `https://satish.store`
@@ -26,7 +26,7 @@ immutable deployment and fresh evidence before they can be described as live.
   There is no HTTP forwarding rule, proxy, or redirect, so plain HTTP receives
   no response.
 - Deployed App A and App B image SHA:
-  `8af2f2de66d834a73f4339071b492676a667c069`
+  `30fd8e9d60050f4b8cc93f25879883264a8ac30e`
 - Backends: six zonal App A NEGs, with all three endpoints healthy in each
   region
 - Capacity: `us-central1` uses zones `b/c/f`; `us-east4` uses `a/b/c`.
@@ -38,28 +38,31 @@ immutable deployment and fresh evidence before they can be described as live.
   internal request returns `401`, while authenticated calls pass in both cells.
 - Team isolation: both namespace deployers passed own-versus-peer RBAC checks;
   Dev has no production GCP or Kubernetes principal
-- BigQuery: the fresh queries returned 21 error-rate rows, 21 latency rows, 100
-  trace joins, 57 regional-traffic rows, and 14 authentication-rejection rows
-- Failover: 171 requests while `us-central1` was faulted; 18 failed only during
-  transition, none failed outside that window, `us-east4` served, public
-  traffic converged in 63.167 seconds, and all six
-  backends recovered
-- Grafana: all four fresh currency panels passed live checks and were visually
-  verified in the saved screenshot
-- Error Reporting: the fresh one-hour view grouped 190 controlled App B fault
-  occurrences and 43 App A dependency-failure occurrences
+- Controlled traffic: 318 bounded release-specific requests exercised success,
+  authentication rejection, injected dependency failure, and recovery in both
+  regions. Both fault settings were restored to zero before the run passed.
+- Cloud Trace: one current-release trace proved the exact App A server -> App A
+  client -> App B server parent chain.
+- Java Profiler: current-release CPU and heap profiles were present in all six
+  zones without retrieving profile payload bytes.
+- Platform observability: fresh control-plane, node, HPA, load-balancer,
+  VPC-flow, and firewall logs passed; sampled load-balancer rows reached the
+  separate 30-day BigQuery dataset.
+- Grafana: a private one-hour GKE Job returned real data for all four required
+  panels through a loopback-only session, then the Job was removed.
+- Error Reporting: the current view grouped the intentional App B injected
+  fault and the propagated App A dependency failure. Unrelated Kubernetes
+  platform groups are not application-health claims.
+- Regional recovery: the retained controlled failover exercise proved bounded
+  automatic drain and recovery, not zero downtime or peak survivor capacity.
 - Optional paid controls: Cloud Armor and Binary Authorization are implemented
   behind feature flags but disabled in the live environment. No policy is
   attached and no cluster admission enforcement is enabled.
-- Terraform evidence for the deployed release: all four stacks reported
-  `NO_CHANGES`. The repository's expanded observability design adds three APIs
-  in `00-bootstrap`, eleven resources and two subnet logging updates in
-  `10-global`, and one backend logging update in `30-lb`; `20-cluster` remains
-  unchanged. These desired-state additions are not part of the evidence above.
-- Cluster logging evidence captured on 2026-08-12 showed both existing
-  clusters healthy after the in-place enablement of API server, controller,
-  scheduler, HPA-controller, system, and workload logging. The other
-  observability additions above require release-matched deployment evidence.
+- Terraform drift: `10-global`, `20-cluster`, and `30-lb` reported no changes.
+  `00-bootstrap` reported only an output refresh after the regional SSD quota
+  grant reached 900 GB; Terraform reported no infrastructure change.
+- Both regional clusters passed the focused final cluster contract with API
+  server, controller, scheduler, HPA-controller, system, and workload logging.
 - Teardown: not run; the environment remains live and billable
 
 Raw evidence and the curated deliverables package are retained locally for
@@ -109,8 +112,9 @@ reproduction steps, and verification summary after the environment is removed.
 ## Release verification
 
 Release-coupled verifiers must run from source that matches the deployed image.
-The retained raw evidence is the authoritative proof for `8af2f2d...`; never
-relabel it as proof for a newer image.
+The retained raw evidence is immutable-release-specific. The current proof is
+bound to `30fd8e9d60050f4b8cc93f25879883264a8ac30e`; never relabel it as proof for
+a different image.
 
 After deploying a new full SHA, run the following commands from that exact
 clean commit. They require the named Google identity, ignored `.env`, Terraform
@@ -128,11 +132,11 @@ make verify-cloud-observability APP_A_IMAGE_TAG="$APP_A_SHA" APP_B_IMAGE_TAG="$A
 make verify-platform-observability
 ```
 
-The previously captured Grafana proof used a loopback-only local runtime. The
-repository provides a one-hour GKE Job with no Service or Ingress; the operator
-reaches it only through a loopback port-forward. Its plugin is baked into a
-scanned Artifact Registry image, and its explicit release-SHA tag is resolved
-to one runtime digest. Build and cleanup require the same full SHA:
+The current Grafana proof used a one-hour GKE Job with no Service or Ingress;
+the operator reached it only through a loopback port-forward. Its plugin was
+baked into a scanned Artifact Registry image, and its explicit release-SHA tag
+was resolved to one runtime digest. Build and cleanup require the same full
+SHA:
 
 ```bash
 make build-grafana GRAFANA_IMAGE_TAG="$APP_A_SHA"
@@ -231,7 +235,7 @@ other. For simultaneous changes, use `make deploy-apps`: it runs both app lanes
 concurrently, waits for both, then runs one aggregate pair gate. Do not launch
 the two direct deploy commands concurrently because each direct lane owns its
 own authoritative compatibility gate and rollback. Breaking contracts use
-expand-contract. A first deployment or pending observability-namespace
+expand-contract. A first deployment or an observability-namespace
 expansion also uses `make deploy-apps` for the shared platform layer.
 
 With the default flags, capture records that Cloud Armor and Binary

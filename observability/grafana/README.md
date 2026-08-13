@@ -31,7 +31,7 @@ credentials:
 bash scripts/verify-grafana.sh --static
 ```
 
-The existing `8af2f2d...` evidence used this bounded local proof:
+For local source review, this bounded loopback helper remains available:
 
 ```bash
 bash scripts/local-grafana-evidence.sh start

@@ -432,7 +432,7 @@ health timeout        = 2 seconds
 unhealthy threshold   = 2
 healthy threshold     = 3
 health logging        = enabled
-backend request logs  = pending sample rate 0.05; 1.0 when ENABLE_CLOUD_ARMOR=1
+backend request logs  = sample rate 0.05; 1.0 when ENABLE_CLOUD_ARMOR=1
 ```
 
 The `protocol = HTTP` value is the private load-balancer-to-Pod backend
@@ -440,8 +440,8 @@ protocol. It does not configure a public HTTP frontend. A no-domain bootstrap ma
 temporarily use port 80, but enabling the trusted domain removes that forwarding
 rule and its target HTTP proxy rather than redirecting it.
 
-The live backend predates the pending request-log setting. The `0.05` normal
-sample and `1.0` Armor sample take effect only after the reviewed `30-lb`
+The live backend uses the `0.05` normal sample. Enabling Cloud Armor changes
+the contract to a `1.0` sample and requires a separately reviewed `30-lb`
 in-place apply.
 
 When `ENABLE_CLOUD_ARMOR=1`, Cloud Armor uses these frozen rules. The default

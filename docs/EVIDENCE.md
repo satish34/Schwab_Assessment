@@ -1,77 +1,76 @@
 # Evidence index
 
-Verification is tied to project `schwab-assessment-gke`. App A and App B are
-both deployed with image SHA
-`8af2f2de66d834a73f4339071b492676a667c069`. Raw artifacts are retained locally
-and intentionally excluded from the public source tree; this index names them
-without publishing their contents.
+Verification is tied to project `schwab-assessment-gke` and immutable App A/App
+B release `30fd8e9d60050f4b8cc93f25879883264a8ac30e`. Raw operational output is
+retained outside the public repository; this index records the proved claims
+without publishing tokens, kubeconfigs, Terraform state, raw logs, or profile
+payloads.
 
-## Verified requirements
+## Current release evidence
 
-| Requirement | Command or operation | Verified result | Evidence location |
+| Requirement | Verification | Proved result | Retained artifact |
 |---|---|---|---|
-| Budget and project safety | `make preflight`, `make capture-evidence` | Dedicated billing-enabled project; $30 budget with 50/80/90/100 current-spend alerts | `01-budget.png`, `01-budget.txt` |
-| Two regional GKE cells | `make verify APP_A_IMAGE_TAG=8af2f2d... APP_B_IMAGE_TAG=8af2f2d...` | Regional Autopilot clusters in `us-central1` and `us-east4`; at least three ready App A and two ready App B Pods in each | `02-clusters.txt` |
-| Immutable release | `make build`, image verifier, and workload verifier | Both full-SHA tags exist, no `latest`; registry and deployed-image checks passed | `02-clusters.txt` |
-| Private local App B | Regional workload verifier | Each App A called only its cell-local App B ClusterIP; App B has no external address or load-balancer NEG | `02-clusters.txt` |
-| Signed local service call | Regional workload verifier and safe direct probe | App A obtains a Google-signed ID token through GKE Workload Identity Federation; authenticated calls pass in both cells and unauthenticated App B calls return `401` | `02-clusters.txt`, `14-service-auth.txt` |
-| Team and deployment isolation | `make verify`, namespace isolation gate | Separate App A/App B namespaces and deployers passed own-versus-peer RBAC checks; policy, Secret, exec, and peer-namespace access were denied; no Dev production RBAC exists | `17-team-isolation.txt` |
-| Six Pod NEGs | `make wait-negs APP_A_IMAGE_TAG=8af2f2d... APP_B_IMAGE_TAG=8af2f2d...` | One real App A Pod IP on port 8080 in central zones `b/c/f` and east zones `a/b/c` | `03-negs.txt` |
-| Global edge | `make verify APP_A_IMAGE_TAG=8af2f2d... APP_B_IMAGE_TAG=8af2f2d...` | `https://satish.store` uses an ACTIVE managed certificate, has 3/3 healthy endpoints per region, and has no HTTP forwarding rule, proxy, or redirect | `04-backend-health-before.txt`, `05-public-endpoint.json` |
-| Structured logs | Traffic generation and logging capture | Schema tests cover the frozen JSON contract; selected live App A/App B entries have matching trace and correlation fields | `06-logging.png`, `06-logging.txt` |
-| BigQuery analysis | `make verify-bigquery APP_A_IMAGE_TAG=8af2f2d... APP_B_IMAGE_TAG=8af2f2d...` | The partitioned table returned 21 error-rate rows, 21 latency rows, 100 trace joins, 57 regional-traffic rows, 14 authentication-rejection rows, and no current export errors | `07-bigquery-schema.json`, `07-bigquery.png`, `07-bigquery.txt`, and [`SQL`](../observability/bigquery/README.md) |
-| Grafana dashboard | `bash scripts/local-grafana-evidence.sh start` | Both keyless data sources were healthy; all four live panels returned real data and the rendered dashboard was visually inspected | `08-grafana.png` |
-| Error Reporting | `make verify-error-reporting`, Google Cloud Console one-hour view | Controlled failures were grouped: 190 App B injected-fault occurrences and 43 App A dependency-failure occurrences | `11-error-reporting.png` |
-| Regional failover | `make test-failover APP_A_IMAGE_TAG=8af2f2d... APP_B_IMAGE_TAG=8af2f2d...` | `us-central1` drained; `us-east4` survived; public traffic converged in 63.167 seconds; both cells and all six backends recovered | `09-failover.csv`, `09-failover.png`, `10-backend-health-after.txt` |
+| Release identity | Release manifest and image/workload gates | App A and App B use the same full SHA; immutable registry digests and deployed images matched | `18-release-manifest.txt` |
+| Two regional GKE cells | Workload gate and focused final cluster check | Regional Autopilot clusters in `us-central1` and `us-east4`; three App A shards and two App B replicas per region were Ready | Retained verifier output |
+| Private local App B | Regional workload and authentication gates | Each App A called only its cell-local App B ClusterIP; App B had no public endpoint; authenticated calls passed and anonymous calls returned `401` | Retained verifier output |
+| Public HTTPS edge | Edge, NEG, certificate, and response gates | `https://satish.store` served the expected release through six healthy zonal App A Pod NEGs; only HTTPS port 443 was configured | `05-public-endpoint.png` |
+| Controlled traffic and recovery | `make seed-traffic` | 318 bounded current-release requests covered success, authentication rejection, injected dependency failure, and recovery in both regions; both fault settings were restored to zero | Retained seed manifest and verifier output |
+| Distributed tracing | Direct Cloud Trace gate | Trace `8a7d9229359fb6fbe0ff27aa043f09e9` proved App A server -> App A client -> App B server with exact parent IDs, service versions, and cell labels | `19-cloud-observability.txt`, `19-cloud-trace.png` |
+| Java profiling | Metadata-only Cloud Profiler gate | Current-release CPU and heap profiles were present in all six zones; profile bytes were never retrieved or stored | `19-cloud-observability.txt`, `19-cloud-profiler.png` |
+| Platform logs and metrics | Platform observability gate | Fresh control-plane, node, HPA, load-balancer, VPC-flow, and firewall logs; healthy-node, HPA, request, 5xx, and latency metrics; sampled LB rows in the separate 30-day dataset | `20-platform-observability.txt` |
+| Cloud-hosted Grafana | Private GKE Job, API, data-source, query, and cleanup gates | A digest-pinned one-hour Job returned real data for all four required panels through a loopback-only session, then was removed | `21-gke-grafana.txt`, `08-grafana.png` |
+| Error Reporting | Current Console view after controlled traffic | The intentional App B injected fault and propagated App A dependency failure were grouped; unrelated Kubernetes platform groups are excluded from the application claim | `11-error-reporting.png` |
+| Team isolation | Namespace, IAM, and RBAC gates | Distinct deployers retained own-namespace workload access while peer namespace, policy, Secret, exec, attach, and port-forward access was denied; Dev had no production principal | Retained verifier output |
 
-The failover run sent 171 requests at 0.973 requests/second. Eighteen failed,
-all during the transition; none failed outside that window. Cached cell health
-drained in 40.454 seconds, load-balancer health drained in 55.449 seconds, and
-public traffic converged in 63.167 seconds, 7.718 seconds after backend drain.
-Cache and load-balancer recovery took 62.181 and 86.420 seconds. Backend health
-was 1/1 in every zone before and after; the three faulted-region zones were 0/1
-during the fault.
+The final focused cluster check passed for both clusters after an aggregate
+capture sampled a transient Autopilot node replacement. That aggregate capture
+failed closed and published no partial artifacts. The subsequent current-state
+check found both clusters conformant, all ten workload Pods Ready, all current
+east nodes Ready and labeled, and both controlled fault settings restored.
 
-The saved queries returned 21 error-rate rows, 21 latency rows, 100 App A/App B
-trace joins, 57 regional-traffic rows, and 14 authentication-rejection rows.
+## Historical resilience measurement
 
-## Disabled or deferred controls
+The last full regional-drain exercise is retained as a historical architecture
+measurement, not relabeled as current-release evidence. It sent 171 requests
+while `us-central1` was faulted; 18 failed during convergence, none failed
+outside that interval, `us-east4` served surviving traffic, public routing
+converged in 63.167 seconds, and all six backends recovered. The defensible
+claim is bounded automatic recovery, not zero downtime or proof that one region
+can carry peak production load.
 
-| Item | Status | What remains |
+## Drift and disabled controls
+
+| Item | Current status | Boundary |
 |---|---|---|
-| Deployed-release drift report | **PASS for `8af2f2d...`** | `make plan-check` reported `NO_CHANGES` for all four stacks and wrote `12-plan-check.txt`. Any later source release requires a new drift report. |
-| Cloud Armor | **IMPLEMENTED / DISABLED LIVE** | The default flag is `0`; no policy is attached and no feature charge is active. Enabling it requires separate cost approval and a bounded rate/WAF exercise. Local proof: `15-cloud-armor.txt`. |
-| Binary Authorization | **IMPLEMENTED / DISABLED LIVE** | The default flag is `0`; both clusters report admission enforcement disabled. Enabling it requires separate cost approval, an in-place-only plan, and a non-persisting denial test. Local proof: `16-binary-authorization.txt`. |
-| Teardown and orphan check | **NOT RUN** | Run only after authorization with the exact destroy confirmation. A successful ordered teardown writes `13-teardown.txt`. |
-| Cloud Trace and Java Profiler | **IMPLEMENTED / NOT IN BASELINE EVIDENCE** | Tests cover the direct keyless exporters, 10% App A sampling boundary, three-span parent chain, and request-safe failure behavior. A matching immutable deployment must pass the live verifier before these controls are claimed live. |
-| Expanded platform observability | **PARTIAL LIVE / NEW EVIDENCE REQUIRED** | A 2026-08-12 read-only check found both clusters healthy with the intended logging components. The repository also defines a platform dataset/sink, VPC flow logging, backend request logging, an observability namespace, and a private GKE Grafana Job; each needs matching runtime proof. |
+| Terraform drift | `10-global`, `20-cluster`, and `30-lb` reported no changes. `00-bootstrap` reported only an output refresh after the regional SSD quota grant reached 900 GB; Terraform reported no infrastructure change. | Re-run the exact saved-plan gates before any apply. |
+| Cloud Armor | **IMPLEMENTED / DISABLED LIVE** | No policy is attached. Enabling it requires cost approval, a reviewed in-place plan, and bounded WAF/rate-limit evidence. |
+| Binary Authorization | **IMPLEMENTED / DISABLED LIVE** | Cluster admission enforcement remains off. Enabling it requires cost approval, an in-place-only plan, and a non-persisting denial test. |
+| Grafana availability | **LIVE EVIDENCE SESSION / NOT DURABLE HOSTING** | The private GKE Job was intentionally removed after capture; there is no public Grafana URL or standing Viewer service. |
+| Teardown | **NOT RUN** | Run only after explicit authorization with the exact destroy confirmation and orphan check. |
 
-## Evidence for a new release
+## Reproducing evidence for another release
 
-Evidence is immutable-release-specific. Do not reuse or relabel the retained
-`8af2f2d...` artifacts for a newer image. After deploying a new full SHA, run
-the API, authentication, workload, NEG, Trace, Profiler, platform, Grafana,
-failover, and drift gates, then capture the new artifacts:
+Evidence is immutable-release-specific. From the exact clean release commit,
+run the workload, traffic, BigQuery, Trace/Profiler, platform, Grafana, failover,
+and drift gates with the full SHA:
 
 ```bash
 RELEASE_SHA="$(git rev-parse HEAD)"
-make capture-evidence \
-  APP_A_IMAGE_TAG="$RELEASE_SHA" \
-  APP_B_IMAGE_TAG="$RELEASE_SHA"
+make verify APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make seed-traffic APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
+make capture-evidence APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
 make capture-observability-manifest \
   APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
 make capture-observability-cloud \
   APP_A_IMAGE_TAG="$RELEASE_SHA" APP_B_IMAGE_TAG="$RELEASE_SHA"
 make capture-observability-platform
 make capture-observability-grafana-start GRAFANA_IMAGE_TAG="$RELEASE_SHA"
-# Save evidence/08-grafana.png from the printed loopback URL.
+# Save the dashboard screenshot from the printed loopback URL.
 make capture-observability-grafana-verify GRAFANA_IMAGE_TAG="$RELEASE_SHA"
 make capture-observability-grafana-cleanup GRAFANA_IMAGE_TAG="$RELEASE_SHA"
 ```
 
-The phased commands write `18-release-manifest.txt` through
-`21-gke-grafana.txt` only after each live gate passes. They never store access
-tokens or Profiler payload bytes. The CLI capture is separate from the direct
-Grafana screenshot. Do not treat a
-missing file, generated placeholder, or static dashboard check as equivalent
-to the completed live panel gate.
+The phased observability commands promote artifacts only after their live gate
+passes. They never store access tokens or Profiler payload bytes. A missing
+file, placeholder, static dashboard check, or artifact from another SHA is not
+equivalent to current live evidence.

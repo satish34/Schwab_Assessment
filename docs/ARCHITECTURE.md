@@ -4,11 +4,10 @@ The system uses two active regional GKE cells behind one global HTTPS endpoint.
 Each cluster is shared by two trusted application teams, but App A and App B
 have separate namespaces, deployment identities, and release paths.
 
-The measured live release is `8af2f2de66d834a73f4339071b492676a667c069`.
-Tracing, Java Profiler, expanded platform telemetry, and the GKE Grafana job
-shown below are implemented but require matching runtime evidence. A
-2026-08-12 read-only check confirmed both existing clusters healthy after the
-in-place GKE logging-component update.
+The measured live release is `30fd8e9d60050f4b8cc93f25879883264a8ac30e`.
+Release-matched evidence proves direct tracing, Java Profiler, bounded platform
+telemetry, and the private one-hour GKE Grafana job shown below. Both regional
+clusters also passed the focused final cluster and logging contract.
 
 ## Runtime architecture
 
