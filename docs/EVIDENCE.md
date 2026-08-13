@@ -1,7 +1,10 @@
 # Evidence index
 
 Verification is tied to project `schwab-assessment-gke` and immutable App A/App
-B release `30fd8e9d60050f4b8cc93f25879883264a8ac30e`. Raw operational output is
+B image tag `30fd8e9d60050f4b8cc93f25879883264a8ac30e`. Its release tree
+`e4d40009613175a7aa569cb25d7c2d30b4ff2164` is byte-identical to sanitized
+public commit `a03a5fb1c174cdeac87638b39acc3b7c401545b0`; publication-only history
+sanitation changed identifiers, not release files. Raw operational output is
 retained outside the public repository; this index records the proved claims
 without publishing tokens, kubeconfigs, Terraform state, raw logs, or profile
 payloads.

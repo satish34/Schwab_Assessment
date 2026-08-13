@@ -4,7 +4,9 @@ The system uses two active regional GKE cells behind one global HTTPS endpoint.
 Each cluster is shared by two trusted application teams, but App A and App B
 have separate namespaces, deployment identities, and release paths.
 
-The measured live release is `30fd8e9d60050f4b8cc93f25879883264a8ac30e`.
+The measured live image tag is `30fd8e9d60050f4b8cc93f25879883264a8ac30e`.
+Its files are byte-identical to sanitized public commit
+`a03a5fb1c174cdeac87638b39acc3b7c401545b0`; only publication history changed.
 Release-matched evidence proves direct tracing, Java Profiler, bounded platform
 telemetry, and the private one-hour GKE Grafana job shown below. Both regional
 clusters also passed the focused final cluster and logging contract.

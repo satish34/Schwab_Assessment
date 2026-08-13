@@ -13,11 +13,14 @@ query input is needed.
 
 ## Live status
 
-The live App A/App B release is
-`30fd8e9d60050f4b8cc93f25879883264a8ac30e`. Release-matched checks proved the
-public endpoint, cell-local authenticated calls, direct Cloud Trace export,
-Java Profiler, bounded platform logging, and a private GKE-hosted Grafana
-evidence session.
+The live App A/App B image tag is
+`30fd8e9d60050f4b8cc93f25879883264a8ac30e`. Publication-only history
+sanitation changed commit identifiers without changing release files; the
+sole byte-identical public source commit is
+[`a03a5fb1c174cdeac87638b39acc3b7c401545b0`](https://github.com/satish34/Schwab_Assessment/commit/a03a5fb1c174cdeac87638b39acc3b7c401545b0).
+Release-matched checks proved the public endpoint, cell-local authenticated
+calls, direct Cloud Trace export, Java Profiler, bounded platform logging, and
+a private GKE-hosted Grafana evidence session.
 
 - Project: `schwab-assessment-gke`
 - Public UI: `https://satish.store`
